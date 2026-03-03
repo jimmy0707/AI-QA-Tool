@@ -1,0 +1,15 @@
+﻿# Python
+venv/
+__pycache__/
+*.pyc
+outputs/
+*.xlsx
+
+# Node
+node_modules/
+build/
+.env
+
+# OS
+.DS_Store
+Thumbs.db
