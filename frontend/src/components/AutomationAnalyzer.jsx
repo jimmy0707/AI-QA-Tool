@@ -1,13 +1,15 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 
 const API_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
-export default function AutomationAnalyzer({ mode, openaiKey, keyValid, selectedModel }) {
+export default function AutomationAnalyzer({ mode, apiKey, keyType, keyValid, selectedModel }) {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [stopped, setStopped] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [dragOver, setDragOver] = useState(false);
+  const abortRef = useRef(null);
 
   const handleDrop = (e) => {
     e.preventDefault(); setDragOver(false);
@@ -16,31 +18,60 @@ export default function AutomationAnalyzer({ mode, openaiKey, keyValid, selected
     else setError("Please upload a valid .xlsx file.");
   };
 
+  const handleStop = () => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    setStopped(true);
+    setLoading(false);
+    setError("⛔ Analysis stopped by user.");
+  };
+
   const handleSubmit = async () => {
     if (!file) return setError("Please upload an Excel file.");
-    if (mode === "online" && !openaiKey) return setError("Please enter your OpenAI API key in the header.");
-    if (mode === "online" && keyValid === false) return setError("Your OpenAI API key is invalid. Please validate it first.");
+    if ((mode === "online" || mode === "gemini") && (!apiKey || apiKey.trim() === ""))
+      return setError("Please enter your API key in the header bar above.");
+    if ((mode === "online" || mode === "gemini") && keyValid === false)
+      return setError("Your API key is invalid. Please check it and try again.");
 
-    setError(null); setLoading(true); setResult(null);
+    setError(null); setLoading(true); setResult(null); setStopped(false);
+
+    // Create AbortController for this request
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     const fd = new FormData();
     fd.append("file", file);
     fd.append("mode", mode);
-    if (mode === "online" && openaiKey) fd.append("openai_key", openaiKey);
-    if (mode === "offline" && selectedModel) fd.append("ollama_model", selectedModel);
+    if (mode === "online")  fd.append("openai_key", apiKey);
+    if (mode === "gemini")  fd.append("gemini_key", apiKey);
+    if (mode === "offline") fd.append("ollama_model", selectedModel);
 
     try {
-      const res = await fetch(`${API_URL}/api/automation/analyze`, { method: "POST", body: fd });
+      const res = await fetch(`${API_URL}/api/automation/analyze`, {
+        method: "POST",
+        body: fd,
+        signal: controller.signal,
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Analysis failed");
       setResult(data);
     } catch (err) {
-      setError(err.message);
+      if (err.name === "AbortError") {
+        // Already handled by handleStop
+      } else {
+        setError(err.message);
+      }
     } finally {
+      abortRef.current = null;
       setLoading(false);
     }
   };
 
   const getPct = (count, total) => (total ? Math.round((count / total) * 100) : 0);
+  const modeLabel = mode === "online" ? "OpenAI GPT" : mode === "gemini" ? "Google Gemini" : "Offline AI";
+  const modeIcon  = mode === "online" ? "🔵" : mode === "gemini" ? "🟢" : "🔌";
 
   return (
     <div className="feature-page">
@@ -49,17 +80,17 @@ export default function AutomationAnalyzer({ mode, openaiKey, keyValid, selected
         <h2 className="feature-title">Manual to Automation Analyzer</h2>
         <p className="feature-desc">
           Upload manual test cases. AI identifies automation candidates based on stability, repeatability and complexity.
-          {" "}<span className={`mode-badge ${mode === "online" ? "mode-badge-online" : "mode-badge-offline"}`}>
-            {mode === "online" ? "🌐 OpenAI GPT — Enhanced Analysis" : "🔌 Offline — Local AI"}
+          {" "}<span className={`mode-badge ${mode === "online" ? "mode-badge-online" : mode === "gemini" ? "mode-badge-gemini" : "mode-badge-offline"}`}>
+            {modeIcon} {modeLabel}
           </span>
         </p>
       </div>
 
-      <div className="content-grid single-col">
+      <div className="content-grid">
         <div className="card">
-          <h3 className="card-title"><span className="step-badge">1</span> Upload Manual Test Cases</h3>
+          <h3 className="card-title"><span className="step-badge step-badge-green">1</span> Upload Test Cases</h3>
           <div
-            className={`dropzone ${dragOver ? "drag-over" : ""} ${file ? "has-file" : ""}`}
+            className={`dropzone dropzone-green ${dragOver ? "drag-over" : ""} ${file ? "has-file" : ""}`}
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
             onDrop={handleDrop}
@@ -82,7 +113,7 @@ export default function AutomationAnalyzer({ mode, openaiKey, keyValid, selected
           </div>
         </div>
 
-        <div className="card criteria-card">
+        <div className="card">
           <h3 className="card-title">🔍 AI Evaluation Criteria</h3>
           <div className="criteria-grid">
             {[
@@ -98,9 +129,9 @@ export default function AutomationAnalyzer({ mode, openaiKey, keyValid, selected
               </div>
             ))}
           </div>
-          {mode === "online" && (
+          {(mode === "online" || mode === "gemini") && (
             <div className="online-advantage">
-              <strong>🌐 OpenAI Advantage:</strong> GPT-3.5 provides deeper context analysis, better step interpretation, and more accurate confidence scoring than local models.
+              <strong>{modeIcon} {modeLabel} Advantage:</strong> Provides deeper context analysis, better step interpretation, and more accurate confidence scoring than local models.
             </div>
           )}
         </div>
@@ -109,17 +140,31 @@ export default function AutomationAnalyzer({ mode, openaiKey, keyValid, selected
       {error && <div className="error-msg">⚠ {error}</div>}
 
       <div className="action-row">
-        <button className="btn-primary btn-green" onClick={handleSubmit} disabled={loading}>
-          {loading
-            ? <span className="loading-content"><span className="spinner" /> Analyzing with {mode === "online" ? "OpenAI..." : "Local AI..."}</span>
-            : `🤖 Analyze with ${mode === "online" ? "OpenAI GPT" : "Offline AI"}`}
-        </button>
+        {!loading ? (
+          <button className="btn-primary btn-green" onClick={handleSubmit}>
+            🤖 Analyze with {modeLabel}
+          </button>
+        ) : (
+          <>
+            <button className="btn-primary btn-green btn-disabled" disabled>
+              <span className="loading-content"><span className="spinner" /> {modeIcon} Analyzing with {modeLabel}...</span>
+            </button>
+            <button className="btn-stop" onClick={handleStop}>
+              ⏹ Stop
+            </button>
+          </>
+        )}
       </div>
 
       {loading && (
         <div className="progress-card">
           <div className="progress-bar-track"><div className="progress-bar-fill animated green" /></div>
-          <p className="progress-text">{mode === "online" ? "🌐 OpenAI GPT is evaluating automation suitability..." : "🔌 Local AI is analyzing test cases..."}</p>
+          <div className="progress-footer">
+            <p className="progress-text">
+              {modeIcon} {modeLabel} is evaluating automation suitability — this may take a moment...
+            </p>
+            <button className="btn-stop-inline" onClick={handleStop}>⏹ Stop Analysis</button>
+          </div>
         </div>
       )}
 
@@ -127,8 +172,8 @@ export default function AutomationAnalyzer({ mode, openaiKey, keyValid, selected
         <div className="results-section">
           <div className="results-header-row">
             <h3 className="results-title">🤖 Automation Analysis Complete</h3>
-            <span className={`mode-badge ${result.mode === "online" ? "mode-badge-online" : "mode-badge-offline"}`}>
-              {result.mode === "online" ? "🌐 OpenAI GPT" : "🔌 Offline AI"}
+            <span className={`mode-badge ${result.mode === "online" ? "mode-badge-online" : result.mode === "gemini" ? "mode-badge-gemini" : "mode-badge-offline"}`}>
+              {result.mode === "online" ? "🔵 OpenAI GPT" : result.mode === "gemini" ? "🟢 Google Gemini" : "🔌 Offline AI"}
             </span>
           </div>
           <div className="stats-grid">

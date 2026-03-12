@@ -5,42 +5,32 @@ import "./index.css";
 
 const API_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
-// Auto-detect key type from format — no user selection needed
-function detectKeyType(key) {
-  if (!key) return null;
-  if (key.startsWith("sk-")) return "openai";
-  if (key.startsWith("AIza")) return "gemini";
-  return "unknown";
-}
-
-const KEY_INFO = {
-  openai: { label: "OpenAI GPT-4o-mini", icon: "🟢", color: "#0f6b35", bg: "#d1fae5", border: "#a7f3d0", mode: "online" },
-  gemini:  { label: "Google Gemini 1.5 Flash", icon: "🔵", color: "#1a56db", bg: "#e8f0fe", border: "#93c5fd", mode: "gemini" },
-  unknown: { label: "Unknown Key", icon: "❓", color: "#b45309", bg: "#fef3c7", border: "#fde68a", mode: null },
-};
-
 export default function App() {
-  const [activeTab, setActiveTab]     = useState("regression");
-  const [mode, setMode]               = useState("offline");
-  const [apiKey, setApiKey]           = useState("");
-  const [detectedType, setDetectedType] = useState(null);
-  const [keyValid, setKeyValid]       = useState(null);   // null | true | false
-  const [validating, setValidating]   = useState(false);
-  const [showKey, setShowKey]         = useState(false);
+  const [activeTab, setActiveTab] = useState("regression");
+  const [mode, setMode] = useState("offline");
+
+  // Single unified API key state
+  const [apiKey, setApiKey] = useState("");
+  const [keyType, setKeyType] = useState(null);     // "openai" | "gemini" | "unknown" | null
+  const [keyValid, setKeyValid] = useState(null);   // true | false | null
+  const [keyMessage, setKeyMessage] = useState("");
+  const [validating, setValidating] = useState(false);
+  const [showKey, setShowKey] = useState(false);
+
+  // Model selector state
   const [selectedModel, setSelectedModel] = useState("phi3");
-  const [availableModels, setAvailableModels] = useState([]);
-  const [hardwareInfo, setHardwareInfo]   = useState(null);
   const [suggestedModel, setSuggestedModel] = useState(null);
+  const [availableModels, setAvailableModels] = useState([]);
+  const [hardwareInfo, setHardwareInfo] = useState(null);
   const [showModelPanel, setShowModelPanel] = useState(false);
-  const [pullingModel, setPullingModel]   = useState(null);
-  const [pullStatus, setPullStatus]       = useState(null);
+  const [pullingModel, setPullingModel] = useState(null);
+  const [pullStatus, setPullStatus] = useState(null);
 
   useEffect(() => { fetchHardwareInfo(); }, []);
 
   const fetchHardwareInfo = async () => {
     try {
       const res = await fetch(`${API_URL}/api/hardware`);
-      if (!res.ok) return;
       const data = await res.json();
       setHardwareInfo(data.hardware);
       setAvailableModels(data.models || []);
@@ -48,42 +38,45 @@ export default function App() {
       const installed = data.installed_models || [];
       if (installed.includes(data.suggested_model)) setSelectedModel(data.suggested_model);
       else if (installed.length > 0) setSelectedModel(installed[0]);
-    } catch (e) { console.log("Hardware info unavailable"); }
+    } catch (e) { console.log("Hardware info not available"); }
   };
 
-  // Auto-detect type as user types
+  // Auto-detect key type from prefix as user types
+  const detectKeyType = (key) => {
+    if (!key) return null;
+    if (key.startsWith("sk-")) return "openai";
+    if (key.startsWith("AIza")) return "gemini";
+    return "unknown";
+  };
+
   const handleKeyChange = (val) => {
     setApiKey(val);
     setKeyValid(null);
-    const type = detectKeyType(val.trim());
-    setDetectedType(type);
-    // Auto-set mode when key type is recognized
-    if (type === "openai") setMode("online");
-    else if (type === "gemini") setMode("gemini");
+    setKeyMessage("");
+    const detected = detectKeyType(val);
+    setKeyType(detected);
+    // Auto-switch mode when key type is detected
+    if (detected === "openai") setMode("online");
+    if (detected === "gemini") setMode("gemini");
   };
 
-  // Single unified validate — backend auto-detects too
   const validateKey = async () => {
-    if (!apiKey.trim()) return;
-    if (detectedType === "unknown") {
-      return;  // already showing error in UI
-    }
-    setValidating(true); setKeyValid(null);
+    if (!apiKey) return;
+    setValidating(true); setKeyValid(null); setKeyMessage("");
     try {
       const res = await fetch(`${API_URL}/api/validate-key`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: apiKey.trim() }),
+        body: JSON.stringify({ api_key: apiKey }),
       });
       const data = await res.json();
-      if (res.ok && data.valid) {
-        setKeyValid(true);
-        // Confirm mode from backend response
-        if (data.mode) setMode(data.mode);
-      } else {
-        setKeyValid(false);
-      }
-    } catch { setKeyValid(false); }
+      setKeyValid(data.valid);
+      setKeyType(data.key_type);
+      setKeyMessage(data.message);
+      // Auto-set mode based on validated key type
+      if (data.valid && data.key_type === "openai") setMode("online");
+      if (data.valid && data.key_type === "gemini") setMode("gemini");
+    } catch { setKeyValid(false); setKeyMessage("Could not reach backend."); }
     finally { setValidating(false); }
   };
 
@@ -96,34 +89,28 @@ export default function App() {
         body: JSON.stringify({ model: modelName }),
       });
       const data = await res.json();
-      if (res.ok) {
-        setPullStatus({ success: true, message: `${modelName} downloaded!` });
-        setSelectedModel(modelName);
-        fetchHardwareInfo();
-      } else {
-        setPullStatus({ success: false, message: data.detail });
-      }
+      if (res.ok) { setPullStatus({ success: true, message: `${modelName} downloaded!` }); setSelectedModel(modelName); fetchHardwareInfo(); }
+      else { setPullStatus({ success: false, message: data.detail }); }
     } catch { setPullStatus({ success: false, message: "Download failed." }); }
     finally { setPullingModel(null); }
   };
 
-  const isOnlineMode   = mode === "online" || mode === "gemini";
-  const openaiKey      = mode === "online" ? apiKey.trim() : "";
-  const geminiKey      = mode === "gemini" ? apiKey.trim() : "";
-  const currentKeyInfo = detectedType ? KEY_INFO[detectedType] : null;
-  const currentModel   = availableModels.find(m => m.name === selectedModel);
-  const modeLabel      = mode === "online" ? "🟢 OpenAI" : mode === "gemini" ? "🔵 Gemini" : `🔌 Ollama · ${selectedModel}`;
+  const getModelInfo = (name) => availableModels.find(m => m.name === name) || null;
+  const currentModel = getModelInfo(selectedModel);
+
+  const keyTypeLabel = keyType === "openai" ? "🔵 OpenAI" : keyType === "gemini" ? "🟢 Gemini" : keyType === "unknown" ? "❓ Unknown" : null;
+  const keyTypeBadgeClass = keyType === "openai" ? "badge-openai" : keyType === "gemini" ? "badge-gemini" : "badge-unknown";
+  const modeLabel = mode === "online" ? "🔵 OpenAI GPT" : mode === "gemini" ? "🟢 Google Gemini" : `🔌 Ollama · ${selectedModel}`;
 
   return (
     <div className="app">
       <header className="header">
         <div className="header-inner">
-
           {/* Brand */}
           <div className="brand">
             <div className="brand-icon">
               <svg viewBox="0 0 40 40" fill="none">
-                <circle cx="20" cy="20" r="18" stroke="#fff" strokeWidth="2"/>
+                <circle cx="20" cy="20" r="18" stroke="#fff" strokeWidth="2" />
                 <path d="M12 20 L18 26 L28 14" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
             </div>
@@ -133,7 +120,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* Nav tabs */}
+          {/* Nav */}
           <nav className="nav">
             <button className={`nav-btn ${activeTab === "regression" ? "active" : ""}`} onClick={() => setActiveTab("regression")}>
               <span className="nav-icon">⚡</span> Regression Optimizer
@@ -143,25 +130,14 @@ export default function App() {
             </button>
           </nav>
 
-          {/* Controls */}
+          {/* Mode Toggle + Model Selector */}
           <div className="header-controls">
-
-            {/* Mode toggle */}
             <div className="mode-toggle-wrap">
-              <button className={`mode-btn ${mode === "offline" ? "mode-active" : ""}`}
-                onClick={() => { setMode("offline"); setApiKey(""); setDetectedType(null); setKeyValid(null); }}>
-                🔌 Offline
-              </button>
-              <button className={`mode-btn ${isOnlineMode ? "mode-active-online" : ""}`}
-                onClick={() => {
-                  if (detectedType === "gemini") setMode("gemini");
-                  else setMode("online");
-                }}>
-                🌐 Online
-              </button>
+              <button className={`mode-btn ${mode === "offline" ? "mode-active" : ""}`} onClick={() => setMode("offline")}>🔌 Offline</button>
+              <button className={`mode-btn ${mode === "online" ? "mode-active-online" : ""}`} onClick={() => setMode("online")}>🔵 OpenAI</button>
+              <button className={`mode-btn ${mode === "gemini" ? "mode-active-gemini" : ""}`} onClick={() => setMode("gemini")}>🟢 Gemini</button>
             </div>
 
-            {/* Ollama model selector — offline only */}
             {mode === "offline" && (
               <div className="model-selector-wrap">
                 <button className="model-selector-btn" onClick={() => setShowModelPanel(!showModelPanel)}>
@@ -189,26 +165,15 @@ export default function App() {
                           </div>
                           <div className="model-card-actions">
                             {model.is_installed
-                              ? <button className={`model-select-btn ${selectedModel === model.name ? "selected" : ""}`}
-                                  onClick={() => { setSelectedModel(model.name); setShowModelPanel(false); }}>
-                                  {selectedModel === model.name ? "✓ Selected" : "Select"}
-                                </button>
-                              : <button className="model-pull-btn" onClick={() => pullModel(model.name)} disabled={pullingModel === model.name}>
-                                  {pullingModel === model.name ? "⬇ Downloading..." : "⬇ Download"}
-                                </button>
+                              ? <button className={`model-select-btn ${selectedModel === model.name ? "selected" : ""}`} onClick={() => { setSelectedModel(model.name); setShowModelPanel(false); }}>{selectedModel === model.name ? "✓ Selected" : "Select"}</button>
+                              : <button className="model-pull-btn" onClick={() => pullModel(model.name)} disabled={pullingModel === model.name}>{pullingModel === model.name ? "⬇ Downloading..." : "⬇ Download"}</button>
                             }
                           </div>
                         </div>
                       </div>
                     ))}
-                    {pullStatus && (
-                      <div className={`pull-status ${pullStatus.success ? "pull-success" : "pull-error"}`}>
-                        {pullStatus.success ? "✓" : "✗"} {pullStatus.message}
-                      </div>
-                    )}
-                    <div className="model-panel-note">
-                      💡 Download once — stays on your PC. Or run <code>ollama pull {selectedModel}</code>
-                    </div>
+                    {pullStatus && <div className={`pull-status ${pullStatus.success ? "pull-success" : "pull-error"}`}>{pullStatus.success ? "✓" : "✗"} {pullStatus.message}</div>}
+                    <div className="model-panel-note">💡 Download once — stays on your PC forever.</div>
                   </div>
                 )}
               </div>
@@ -216,51 +181,39 @@ export default function App() {
           </div>
         </div>
 
-        {/* API Key Bar — shown when Online mode selected */}
-        {isOnlineMode && (
+        {/* Unified API Key Bar — shown for online and gemini modes */}
+        {(mode === "online" || mode === "gemini") && (
           <div className="api-key-bar">
             <div className="api-key-inner">
+              <span className="api-key-label">🔑 API Key</span>
 
-              {/* Auto-detected key badge */}
-              {currentKeyInfo && (
-                <span className="key-type-badge" style={{ background: currentKeyInfo.bg, color: currentKeyInfo.color, borderColor: currentKeyInfo.border }}>
-                  {currentKeyInfo.icon} {currentKeyInfo.label}
-                </span>
-              )}
-              {!currentKeyInfo && (
-                <span className="api-key-label">🔑 API Key</span>
-              )}
-
-              {/* Key input */}
-              <div className={`api-key-input-wrap ${detectedType === "unknown" ? "input-error" : ""}`}>
+              <div className="api-key-input-wrap">
                 <input
                   type={showKey ? "text" : "password"}
-                  className="api-key-input"
-                  placeholder="Paste OpenAI (sk-...) or Gemini (AIza...) key — auto-detected"
+                  className={`api-key-input ${!apiKey ? "input-missing" : keyValid === true ? "input-valid" : keyValid === false ? "input-invalid" : ""}`}
+                  placeholder={mode === "gemini" ? "AIza... (Gemini key)" : "sk-... (OpenAI key)"}
                   value={apiKey}
                   onChange={(e) => handleKeyChange(e.target.value)}
+                  autoFocus
                 />
-                <button className="key-toggle-btn" onClick={() => setShowKey(!showKey)}>
-                  {showKey ? "🙈" : "👁️"}
-                </button>
+                <button className="key-toggle-btn" onClick={() => setShowKey(!showKey)}>{showKey ? "🙈" : "👁️"}</button>
               </div>
 
-              {/* Validate button */}
-              <button className="validate-btn" onClick={validateKey}
-                disabled={validating || !apiKey || detectedType === "unknown" || detectedType === null}>
+              {/* Auto-detected key type badge */}
+              {keyType && (
+                <span className={`key-type-badge ${keyTypeBadgeClass}`}>{keyTypeLabel}</span>
+              )}
+
+              <button className="validate-btn" onClick={validateKey} disabled={validating || !apiKey}>
                 {validating ? "Checking..." : "Validate"}
               </button>
 
-              {/* Validation result */}
-              {keyValid === true  && <span className="key-status valid">✓ Valid · {detectedType === "gemini" ? "Gemini" : "OpenAI"}</span>}
-              {keyValid === false && <span className="key-status invalid">✗ Invalid key</span>}
-              {detectedType === "unknown" && <span className="key-status invalid">✗ Unrecognized format</span>}
+              {!apiKey && <span className="key-status missing">← Enter your key here first</span>}
+              {keyValid === true  && <span className="key-status valid">✓ {keyMessage}</span>}
+              {keyValid === false && <span className="key-status invalid">✗ {keyMessage}</span>}
 
-              {/* Hint text */}
               <span className="api-key-note">
-                {detectedType === "openai" && "OpenAI key detected (sk-...) · platform.openai.com/api-keys"}
-                {detectedType === "gemini" && "Gemini key detected (AIza...) · aistudio.google.com/app/apikey"}
-                {!detectedType && "Paste your key — type auto-detected from format"}
+                OpenAI keys start with <code>sk-</code> · Gemini keys start with <code>AIza</code>
               </span>
             </div>
           </div>
@@ -269,8 +222,8 @@ export default function App() {
 
       <main className="main">
         {activeTab === "regression"
-          ? <RegressionOptimizer mode={mode} openaiKey={openaiKey} geminiKey={geminiKey} keyValid={keyValid} selectedModel={selectedModel} />
-          : <AutomationAnalyzer  mode={mode} openaiKey={openaiKey} geminiKey={geminiKey} keyValid={keyValid} selectedModel={selectedModel} />
+          ? <RegressionOptimizer mode={mode} apiKey={apiKey} keyType={keyType} keyValid={keyValid} selectedModel={selectedModel} />
+          : <AutomationAnalyzer mode={mode} apiKey={apiKey} keyType={keyType} keyValid={keyValid} selectedModel={selectedModel} />
         }
       </main>
 

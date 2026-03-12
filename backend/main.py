@@ -11,6 +11,9 @@ import logging
 import psutil
 import platform
 import asyncio
+import time
+import threading
+import collections
 from typing import Optional, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI, RateLimitError, AuthenticationError, APIError
@@ -377,78 +380,95 @@ Rules:
 
 
 # ─────────────────────────────────────────────
-# LAYER 2 — Extended Keyword Heuristic
-# Covers 100+ QA domain keywords across all industries
+# LAYER 2 — JSON-driven Keyword Heuristic
+# Edit heuristic_rules.json to add/remove keywords.
+# Hot-reload: rules refresh automatically when the JSON file changes.
+# No server restart needed after editing the JSON.
 # ─────────────────────────────────────────────
-RISK_RULES = [
-    # (keywords, score_boost, label)
-    # P1 Critical
-    (["payment", "checkout", "transaction", "refund", "billing", "invoice", "stripe", "paypal"], 5, "payment processing"),
-    (["login", "logout", "auth", "authentication", "authorize", "sso", "oauth", "jwt", "session", "token"], 5, "authentication/authorization"),
-    (["password", "credentials", "encrypt", "decrypt", "ssl", "tls", "certificate", "https"], 5, "security/encryption"),
-    (["crash", "exception", "error", "failure", "corrupt", "data loss", "unresponsive", "freeze"], 5, "system stability"),
-    (["biometric", "fingerprint", "face id", "face recognition", "iris", "retina"], 5, "biometric security"),
-    (["blockchain", "smart contract", "wallet", "crypto", "nft", "defi", "web3"], 5, "blockchain/crypto"),
-    (["gdpr", "hipaa", "pci", "compliance", "regulation", "audit", "privacy"], 5, "regulatory compliance"),
-    (["database", "sql", "migration", "backup", "restore", "data integrity"], 4, "data integrity"),
-    (["api", "endpoint", "rest", "graphql", "webhook", "integration", "microservice"], 4, "API/integration"),
-    (["otp", "two factor", "2fa", "mfa", "verification code", "sms code"], 4, "multi-factor auth"),
-    # P2 Moderate
-    (["search", "filter", "sort", "pagination", "query"], 2, "search/filter functionality"),
-    (["upload", "download", "import", "export", "file", "attachment", "document"], 2, "file management"),
-    (["notification", "email", "push", "alert", "reminder", "sms"], 2, "notification system"),
-    (["cart", "wishlist", "order", "product", "inventory", "stock"], 2, "e-commerce workflow"),
-    (["profile", "account", "settings", "preferences", "dashboard"], 2, "user management"),
-    (["report", "analytics", "chart", "graph", "metrics", "kpi", "dashboard"], 2, "reporting/analytics"),
-    (["mobile", "ios", "android", "responsive", "tablet", "device"], 2, "mobile/responsive"),
-    (["performance", "load", "stress", "latency", "throughput", "speed"], 2, "performance testing"),
-    (["iot", "sensor", "device", "hardware", "embedded", "firmware"], 3, "IoT/hardware"),
-    (["ai", "ml", "model", "prediction", "recommendation", "nlp"], 2, "AI/ML feature"),
-    (["ar", "vr", "augmented", "virtual reality", "3d", "spatial"], 2, "AR/VR feature"),
-    (["accessibility", "wcag", "aria", "screen reader", "keyboard nav"], 2, "accessibility"),
-    (["chat", "messaging", "realtime", "websocket", "live", "streaming"], 2, "real-time feature"),
-    (["social", "share", "like", "comment", "follow", "feed"], 1, "social feature"),
-    # P3 Low
-    (["ui", "layout", "color", "font", "icon", "tooltip", "style", "css"], 0, "UI/styling"),
-    (["spelling", "typo", "grammar", "text", "label", "placeholder"], 0, "content/copy"),
-]
 
-AUTOMATION_RULES = [
-    # (keywords, suitability, confidence, reason)
-    # Not Suitable
-    (["otp", "one time password", "verification code", "sms code"], "Not Suitable", 10, "Requires real OTP which cannot be automated"),
-    (["captcha", "recaptcha", "human verification", "robot check"], "Not Suitable", 10, "CAPTCHA requires human interaction"),
-    (["biometric", "fingerprint", "face id", "face recognition", "iris scan"], "Not Suitable", 10, "Biometric requires physical hardware"),
-    (["physical", "hardware", "device", "iot sensor", "barcode scan", "qr scan"], "Not Suitable", 15, "Requires physical device interaction"),
-    (["visual inspection", "visual check", "manual review", "human review", "look and feel"], "Not Suitable", 20, "Requires human visual judgment"),
-    (["voice", "speech", "audio", "sound", "microphone", "speaker"], "Not Suitable", 20, "Requires audio hardware interaction"),
-    (["ar", "vr", "augmented reality", "virtual reality", "spatial"], "Not Suitable", 25, "AR/VR requires specialized hardware"),
-    (["usability", "ux review", "user experience review", "user interview"], "Not Suitable", 15, "Usability requires human evaluation"),
-    # Partial
-    (["email notification", "push notification", "sms notification"], "Partial", 45, "Notification delivery needs external verification"),
-    (["third party", "external service", "payment gateway", "external api"], "Partial", 50, "External dependencies may affect reliability"),
-    (["dynamic data", "random data", "real-time data", "live data"], "Partial", 50, "Dynamic data makes assertions challenging"),
-    (["drag and drop", "file upload", "file download", "file picker"], "Partial", 55, "File interactions have partial automation support"),
-    (["mobile gesture", "swipe", "pinch", "scroll", "touch"], "Partial", 55, "Mobile gestures have partial automation support"),
-    (["blockchain", "smart contract", "crypto", "wallet"], "Partial", 40, "Blockchain interactions need specialized frameworks"),
-    (["pdf", "excel", "word", "document generation", "report generation"], "Partial", 60, "Document generation needs content validation"),
-    (["performance", "load test", "stress test", "benchmark"], "Partial", 65, "Performance testing needs specialized tools"),
-    # Automatable
-    (["api", "rest", "graphql", "endpoint", "http", "json", "xml"], "Automatable", 90, "API testing is highly automatable"),
-    (["database", "sql", "db query", "data validation", "db record"], "Automatable", 90, "Database validation is highly automatable"),
-    (["login", "logout", "register", "signup", "forgot password"], "Automatable", 85, "Authentication flows are standard automation candidates"),
-    (["form", "input", "field", "submit", "button", "checkbox", "dropdown"], "Automatable", 85, "Form interactions are easily automatable"),
-    (["search", "filter", "sort", "pagination"], "Automatable", 80, "Search/filter functionality is automatable"),
-    (["navigation", "menu", "link", "redirect", "routing"], "Automatable", 85, "Navigation testing is automatable"),
-    (["crud", "create", "read", "update", "delete"], "Automatable", 85, "CRUD operations are standard automation candidates"),
-    (["validation", "error message", "alert", "toast", "warning"], "Automatable", 80, "Validation messages are automatable"),
-]
+import pathlib as _pathlib
 
+_RULES_JSON_PATH = _pathlib.Path(__file__).parent / "heuristic_rules.json"
+
+# ── Internal cache ──────────────────────────────────────────────────────────
+# Stores (mtime, RISK_RULES, AUTOMATION_RULES) so we only re-parse when the
+# file actually changes on disk.
+_rules_cache: dict = {"mtime": None, "risk": [], "auto": []}
+
+
+def _load_rules() -> tuple:
+    """
+    Return (RISK_RULES, AUTOMATION_RULES) tuples from heuristic_rules.json.
+
+    HOW HOT-RELOAD WORKS:
+      - On every heuristic call we check the file's mtime (1 os.stat call ~1µs).
+      - If mtime is unchanged we return the cached tuple immediately — zero I/O.
+      - If the file changed we re-parse JSON and rebuild the in-memory tuples.
+      - Thread-safe: Python's GIL protects the dict assignment on CPython.
+
+    JSON SCHEMA expected:
+      {
+        "risk_rules":       [{"keywords": [...], "score_boost": int, "label": str}, ...],
+        "automation_rules": [{"keywords": [...], "suitability": str, "confidence": int, "reason": str}, ...]
+      }
+    """
+    try:
+        mtime = _RULES_JSON_PATH.stat().st_mtime
+    except FileNotFoundError:
+        logger.error(f"[Rules] heuristic_rules.json not found at {_RULES_JSON_PATH} — using cached rules")
+        return _rules_cache["risk"], _rules_cache["auto"]
+
+    # Cache hit — file unchanged
+    if mtime == _rules_cache["mtime"]:
+        return _rules_cache["risk"], _rules_cache["auto"]
+
+    # Cache miss — file changed or first load
+    try:
+        raw = json.loads(_RULES_JSON_PATH.read_text(encoding="utf-8"))
+
+        risk_rules = [
+            (r["keywords"], r["score_boost"], r["label"])
+            for r in raw.get("risk_rules", [])
+        ]
+        auto_rules = [
+            (r["keywords"], r["suitability"], r["confidence"], r["reason"])
+            for r in raw.get("automation_rules", [])
+        ]
+
+        _rules_cache["mtime"] = mtime
+        _rules_cache["risk"]  = risk_rules
+        _rules_cache["auto"]  = auto_rules
+
+        total_risk = sum(len(r[0]) for r in risk_rules)
+        total_auto = sum(len(r[0]) for r in auto_rules)
+        logger.info(
+            f"[Rules] Loaded heuristic_rules.json — "
+            f"{len(risk_rules)} risk groups ({total_risk} keywords), "
+            f"{len(auto_rules)} automation groups ({total_auto} keywords)"
+        )
+        return risk_rules, auto_rules
+
+    except Exception as e:
+        logger.error(f"[Rules] Failed to parse heuristic_rules.json: {e} — using cached rules")
+        return _rules_cache["risk"], _rules_cache["auto"]
+
+
+# Pre-load at startup so the first request has no cold-start delay
+try:
+    _load_rules()
+except Exception:
+    pass
 
 def heuristic_risk(title: str, description: str, steps: str, severity: str) -> dict:
-    """Extended keyword heuristic covering 100+ QA domains."""
+    """
+    JSON-driven keyword heuristic for risk scoring.
+    Rules are loaded from heuristic_rules.json — edit the JSON to add keywords,
+    changes are picked up automatically without restarting the server.
+    """
+    risk_rules, _ = _load_rules()
+
     text = (title + " " + description + " " + steps).lower()
-    sev = severity.lower()
+    sev  = severity.lower()
     score = 3
     reason_parts = []
 
@@ -462,9 +482,9 @@ def heuristic_risk(title: str, description: str, steps: str, severity: str) -> d
     elif sev in ("medium", "moderate", "p2"):
         score += 1
 
-    # Keyword scoring
+    # Keyword scoring — uses hot-reloaded rules from JSON
     matched = False
-    for keywords, boost, label in RISK_RULES:
+    for keywords, boost, label in risk_rules:
         if any(k in text for k in keywords):
             score += boost
             reason_parts.append(label)
@@ -481,10 +501,16 @@ def heuristic_risk(title: str, description: str, steps: str, severity: str) -> d
 
 
 def heuristic_automation(title: str, description: str, steps: str) -> dict:
-    """Extended keyword heuristic covering 100+ automation patterns."""
+    """
+    JSON-driven keyword heuristic for automation suitability.
+    Rules are loaded from heuristic_rules.json — edit the JSON to add keywords,
+    changes are picked up automatically without restarting the server.
+    """
+    _, auto_rules = _load_rules()
+
     text = (title + " " + description + " " + steps).lower()
 
-    for keywords, suitability, confidence, reason in AUTOMATION_RULES:
+    for keywords, suitability, confidence, reason in auto_rules:
         if any(k in text for k in keywords):
             return {"suitability": suitability, "confidence": confidence, "explanation": reason, "source": "heuristic"}
 
@@ -582,11 +608,7 @@ def openai_analyze_risk(row: dict, api_key: str) -> dict:
     )
     prompt = f"Title: {title}\nDescription: {description}\nSteps: {steps}\nSeverity: {severity}"
     try:
-        # Pass through rate manager — handles caching, queuing, retry
-        fn  = lambda: call_openai_sdk(prompt, api_key, system)
-        raw = asyncio.get_event_loop().run_until_complete(
-            ai_manager.call("openai", prompt, fn)
-        )
+        raw = call_openai_sdk(prompt, api_key, system)
         parsed = json.loads(raw)
         score = safe_int(parsed.get("risk_score") or 5, default=5, lo=1, hi=10)
         priority = str(parsed.get("priority") or "").strip()
@@ -640,90 +662,344 @@ def openai_analyze_automation(row: dict, api_key: str) -> dict:
 # GEMINI MODE — Google Gemini AI
 # ─────────────────────────────────────────────
 
+# ─────────────────────────────────────────────
+# GEMINI — Model cache, rate limiter, safe helpers
+# ─────────────────────────────────────────────
+
+# Fix 3 + 4: module-level cache — list_models() called ONCE per key, never per request
+_gemini_model_cache: dict = {}   # key_fingerprint → model_name string
+_gemini_list_lock = threading.Lock()
+
+# Fix 1 + 2: sliding-window rate limiter — free tier = 5 RPM max
+_gemini_rpm_limit  = 5       # max requests per 60 s
+_gemini_rpm_window = 60.0    # seconds
+_gemini_timestamps: dict = {}   # key_fingerprint → collections.deque of monotonic timestamps
+_gemini_rate_lock = threading.Lock()
+
+
+def _gemini_rate_wait(key_fingerprint: str):
+    """
+    Block the calling thread until it is safe to send another Gemini request.
+    Implements a sliding-window rate limiter capped at _gemini_rpm_limit RPM.
+    Safe to call from ThreadPoolExecutor workers — time.sleep() is intentional.
+    """
+    with _gemini_rate_lock:
+        if key_fingerprint not in _gemini_timestamps:
+            _gemini_timestamps[key_fingerprint] = collections.deque()
+        timestamps = _gemini_timestamps[key_fingerprint]
+
+        now = time.monotonic()
+        # Drop timestamps older than the window
+        while timestamps and now - timestamps[0] >= _gemini_rpm_window:
+            timestamps.popleft()
+
+        if len(timestamps) >= _gemini_rpm_limit:
+            # Must wait until the oldest request exits the window
+            wait = _gemini_rpm_window - (now - timestamps[0]) + 0.1
+            logger.info(f"[Gemini] Rate limit — waiting {wait:.1f}s (5 RPM free tier)")
+            time.sleep(wait)
+            # Re-clean after sleep
+            now = time.monotonic()
+            while timestamps and now - timestamps[0] >= _gemini_rpm_window:
+                timestamps.popleft()
+
+        timestamps.append(time.monotonic())
+
+
+def _discover_gemini_model(client) -> str:
+    """
+    Fix 3: Call list_models() ONCE and pick the best generateContent model.
+    Sorted by: flash > pro > other, 2.0 > 1.5 > 1.0, -latest > plain.
+    """
+    try:
+        all_models = list(client.models.list())
+    except Exception as e:
+        raise RuntimeError(f"[Gemini] Cannot list models: {e}")
+
+    # Filter to models that support generateContent
+    supported = []
+    for m in all_models:
+        actions = (
+            getattr(m, "supported_actions", None) or
+            getattr(m, "supported_generation_methods", None) or
+            []
+        )
+        if "generateContent" in actions:
+            supported.append(m)
+
+    # If SDK doesn't expose actions, use full list
+    if not supported:
+        supported = all_models
+
+    names = [getattr(m, "name", None) or str(m) for m in supported]
+    logger.info(f"[Gemini] Models available for generateContent: {names}")
+
+    def priority(name: str) -> tuple:
+        n = name.lower()
+        tier    = 0 if "flash" in n else 1 if "pro" in n else 2
+        version = 0 if "2.0" in n else 1 if "1.5" in n else 2 if "1.0" in n else 3
+        latest  = 0 if "latest" in n else 1
+        return (tier, version, latest)
+
+    names.sort(key=priority)
+    if not names:
+        raise RuntimeError("[Gemini] No generateContent-capable models found for this API key.")
+
+    logger.info(f"[Gemini] Selected model: {names[0]}")
+    return names[0]
+
+
+def _get_gemini_model(client, key_fingerprint: str) -> str:
+    """
+    Fix 4: Return cached model name, discovering only on first call per key.
+    Thread-safe — multiple parallel workers share the same cache safely.
+    """
+    with _gemini_list_lock:
+        if key_fingerprint not in _gemini_model_cache:
+            _gemini_model_cache[key_fingerprint] = _discover_gemini_model(client)
+        return _gemini_model_cache[key_fingerprint]
+
+
+def _safe_parse_gemini_json(raw: str, context: str) -> dict:
+    """
+    Fix 5: Safe JSON parser — returns None if response is empty or unparseable.
+    Never raises — caller decides what to do on None.
+    """
+    if not raw or not raw.strip():
+        logger.warning(f"[Gemini] Empty response for {context} — will fallback")
+        return None
+    try:
+        # Strip accidental markdown fences Gemini sometimes adds despite mime type
+        cleaned = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        return json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        logger.warning(f"[Gemini] JSON parse failed for {context}: {e} | raw={raw[:80]!r}")
+        return None
+
+
 def call_gemini(prompt: str, api_key: str) -> str:
-    """Call Gemini 1.5 Flash using new google-genai SDK."""
+    """
+    Fix 1-4: Rate-limited, model-cached Gemini call.
+    - Waits automatically if 5 RPM free-tier limit is close
+    - Discovers and caches model on first call per API key
+    - Returns raw response text (may be empty — callers use _safe_parse_gemini_json)
+    - On 404, clears model cache and retries discovery once
+    """
+    key_fingerprint = api_key[-8:]
     client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model="gemini-1.5-flash",
-        contents=prompt,
-        config=genai_types.GenerateContentConfig(
-            temperature=0.1,
-            max_output_tokens=200,
-            response_mime_type="application/json",
-        ),
-    )
-    return response.text
+
+    # Fix 1+2: enforce 5 RPM before every call
+    _gemini_rate_wait(key_fingerprint)
+
+    # Fix 4: get cached model (discovers on first call)
+    model_name = _get_gemini_model(client, key_fingerprint)
+
+    def _call(model: str) -> str:
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=300,
+                response_mime_type="application/json",
+            ),
+        )
+        return response.text or ""
+
+    try:
+        return _call(model_name)
+    except Exception as e:
+        err = str(e)
+        if "404" in err or "NOT_FOUND" in err:
+            # Cached model gone — rediscover once
+            logger.warning(f"[Gemini] Model '{model_name}' gone — rediscovering...")
+            with _gemini_list_lock:
+                _gemini_model_cache.pop(key_fingerprint, None)
+            model_name = _get_gemini_model(client, key_fingerprint)
+            return _call(model_name)
+        raise
+
+
+def _classify_gemini_error(e: Exception) -> str:
+    """
+    Precisely classify a Gemini exception so each error type gets
+    the correct treatment instead of everything becoming a 401.
+
+    Returns one of four string labels:
+      "invalid_key"  — key is genuinely wrong/revoked   → raise HTTP 401
+      "quota"        — free-tier RPM or daily cap hit    → fallback silently
+      "network"      — timeout, DNS, connection refused  → fallback silently
+      "fallback"     — everything else (empty resp, etc) → fallback silently
+
+    Root cause of the original bug:
+      The old check matched "permission" inside the word "RESOURCE_EXHAUSTED"
+      and "invalid" inside "invalid argument" (a quota-related Gemini message),
+      so quota errors were wrongly classified as auth failures and returned 401.
+    """
+    err = str(e).lower()
+    original = str(e)   # keep original case for status-code checks
+
+    # ── Genuine auth failures ────────────────────────────────────────────────
+    # Only raise 401 when Google explicitly says the key itself is bad.
+    # Match on the exact status code 401 or Google's specific auth messages.
+    # Do NOT match on "invalid" or "permission" alone — those appear in quota
+    # and other non-auth error messages too.
+    AUTH_SIGNALS = [
+        "api_key_invalid",           # Google error code
+        "api key not valid",         # Google human-readable message
+        "invalid api key",           # variation
+        "unauthenticated",           # gRPC / HTTP status word
+        "401",                       # raw HTTP status in message
+    ]
+    if any(sig in err for sig in AUTH_SIGNALS):
+        return "invalid_key"
+
+    # ── Quota / rate-limit errors ────────────────────────────────────────────
+    # 429 RESOURCE_EXHAUSTED covers both RPM and daily quota.
+    # "quota_exceeded" and "rateLimitExceeded" are Google error codes.
+    QUOTA_SIGNALS = [
+        "429",
+        "resource_exhausted",        # gRPC status
+        "quota_exceeded",            # Google error code
+        "ratelimitexceeded",         # variation
+        "rate limit",
+        "quota",
+        "too many requests",
+        "daily limit",
+        "per minute",
+    ]
+    if any(sig in err for sig in QUOTA_SIGNALS):
+        return "quota"
+
+    # ── Network / infrastructure errors ─────────────────────────────────────
+    NETWORK_SIGNALS = [
+        "timeout",
+        "timed out",
+        "connection",
+        "network",
+        "dns",
+        "socket",
+        "unreachable",
+        "name or service not known",
+        "ssl",
+        "certificate",
+        "503",
+        "502",
+        "504",
+    ]
+    if any(sig in err for sig in NETWORK_SIGNALS):
+        return "network"
+
+    # ── Everything else (empty response, JSON parse fail, model gone, etc) ───
+    return "fallback"
 
 
 def gemini_analyze_risk(row: dict, api_key: str) -> dict:
-    """Analyze test case risk using Gemini — goes through rate manager."""
+    """
+    Risk analysis via Gemini with precise error classification.
+    Only raises HTTP 401 when the key is genuinely invalid.
+    All other errors (quota, network, empty response) fall back
+    silently to Ollama → Heuristic.
+    """
     title, description, steps, severity = _extract_risk_fields(row)
     prompt = (
         "You are a senior QA risk analyst. Respond with valid JSON only.\n"
         f"Title: {title}\nDescription: {description}\nSteps: {steps}\nSeverity: {severity}\n\n"
         "Return exactly this JSON structure:\n"
         '{"risk_score": 7, "priority": "P2", "explanation": "one professional sentence"}\n'
-        "Rules: risk_score integer 1-10, priority P1 (8-10) P2 (5-7) P3 (1-4)."
+        "Rules: risk_score integer 1-10. priority: P1 (score 8-10), P2 (5-7), P3 (1-4)."
     )
     try:
-        fn  = lambda: call_gemini(prompt, api_key)
-        raw = asyncio.get_event_loop().run_until_complete(
-            ai_manager.call("gemini", prompt, fn)
-        )
-        parsed = json.loads(raw)
+        raw    = call_gemini(prompt, api_key)
+        parsed = _safe_parse_gemini_json(raw, title[:30])
+
+        if parsed is None:
+            raise ValueError("Empty or unparseable Gemini response")
+
         score = safe_int(parsed.get("risk_score") or 5, default=5, lo=1, hi=10)
         priority = str(parsed.get("priority") or "").strip()
         if priority not in ("P1", "P2", "P3"):
             priority = "P1" if score >= 8 else "P2" if score >= 5 else "P3"
         explanation = safe_str(parsed.get("explanation") or parsed.get("reason"))
-        logger.info(f"Gemini risk: {title[:30]} → {priority} ({score})")
-        return {"risk_score": score, "priority": priority, "explanation": explanation, "mode": "gemini", "source": "gemini"}
+        logger.info(f"[Gemini] Risk: {title[:30]} → {priority} (score={score})")
+        return {"risk_score": score, "priority": priority, "explanation": explanation,
+                "mode": "gemini", "source": "gemini"}
+
     except Exception as e:
-        err = str(e).lower()
-        if "api_key" in err or "invalid" in err or "permission" in err:
+        error_type = _classify_gemini_error(e)
+
+        if error_type == "invalid_key":
+            # Only case that surfaces to the frontend as 401
+            logger.warning(f"[Gemini] Invalid API key detected for '{title[:40]}'")
             raise HTTPException(status_code=401, detail="Invalid Gemini API key.")
-        logger.warning(f"Gemini error — falling back to Ollama: {e}")
-        result = ollama_analyze_risk(title, description, steps, severity) or heuristic_risk(title, description, steps, severity)
+
+        elif error_type == "quota":
+            logger.warning(f"[Gemini] Quota/rate-limit for '{title[:40]}' — falling back to Ollama")
+
+        elif error_type == "network":
+            logger.warning(f"[Gemini] Network error for '{title[:40]}': {e} — falling back to Ollama")
+
+        else:
+            # empty response, JSON parse fail, unexpected error — all fall back
+            logger.warning(f"[Gemini] Fallback for '{title[:40]}': {e}")
+
+        result = ollama_analyze_risk(title, description, steps, severity) or \
+                 heuristic_risk(title, description, steps, severity)
         result["mode"] = "gemini-fallback"
         return result
 
 
 def gemini_analyze_automation(row: dict, api_key: str) -> dict:
-    """Analyze automation suitability using Gemini — same output format as OpenAI/Ollama."""
+    """
+    Automation analysis via Gemini with precise error classification.
+    Only raises HTTP 401 when the key is genuinely invalid.
+    All other errors fall back silently to Ollama → Heuristic.
+    """
     title, description, steps = _extract_auto_fields(row)
-
     prompt = (
         "You are a senior QA automation architect. Respond with valid JSON only.\n"
         f"Title: {title}\nDescription: {description}\nSteps: {steps}\n\n"
         "Return exactly this JSON structure:\n"
         '{"suitability": "Automatable", "confidence": 85, "explanation": "one professional sentence"}\n'
-        "Rules: suitability must be exactly Automatable, Partial, or Not Suitable. "
-        "Automatable=stable repeatable no OTP/Captcha. "
-        "Partial=some dynamic or external dependencies. "
+        "Rules: suitability must be exactly one of: Automatable, Partial, Not Suitable.\n"
+        "Automatable=stable repeatable, no OTP/Captcha.\n"
+        "Partial=some dynamic/external dependencies.\n"
         "Not Suitable=needs human judgment, OTP, Captcha, biometric, or physical hardware."
     )
-
     try:
-        raw = call_gemini(prompt, api_key)
-        parsed = json.loads(raw)
+        raw    = call_gemini(prompt, api_key)
+        parsed = _safe_parse_gemini_json(raw, title[:30])
+
+        if parsed is None:
+            raise ValueError("Empty or unparseable Gemini response")
+
         suitability = str(parsed.get("suitability") or "").strip()
         if suitability not in ("Automatable", "Partial", "Not Suitable"):
             suitability = "Partial"
-        confidence = safe_int(parsed.get("confidence") or 50, default=50, lo=0, hi=100)
+        confidence  = safe_int(parsed.get("confidence") or 50, default=50, lo=0, hi=100)
         explanation = safe_str(parsed.get("explanation") or parsed.get("reason"))
-        logger.info(f"Gemini automation: {title[:30]} → {suitability} ({confidence}%)")
-        return {"suitability": suitability, "confidence": confidence, "explanation": explanation, "mode": "gemini", "source": "gemini"}
+        logger.info(f"[Gemini] Automation: {title[:30]} → {suitability} ({confidence}%)")
+        return {"suitability": suitability, "confidence": confidence, "explanation": explanation,
+                "mode": "gemini", "source": "gemini"}
 
     except Exception as e:
-        err = str(e).lower()
-        if "api_key" in err or "invalid" in err or "permission" in err:
-            raise HTTPException(status_code=401, detail="Invalid Gemini API key.")
-        if "quota" in err or "rate" in err or "429" in err:
-            logger.warning(f"Gemini quota exceeded — falling back to Ollama for: {title[:40]}")
-        else:
-            logger.warning(f"Gemini error ({e}) — falling back to Ollama for: {title[:40]}")
+        error_type = _classify_gemini_error(e)
 
-        result = ollama_analyze_automation(title, description, steps) or heuristic_automation(title, description, steps)
+        if error_type == "invalid_key":
+            logger.warning(f"[Gemini] Invalid API key detected for '{title[:40]}'")
+            raise HTTPException(status_code=401, detail="Invalid Gemini API key.")
+
+        elif error_type == "quota":
+            logger.warning(f"[Gemini] Quota/rate-limit for '{title[:40]}' — falling back to Ollama")
+
+        elif error_type == "network":
+            logger.warning(f"[Gemini] Network error for '{title[:40]}': {e} — falling back to Ollama")
+
+        else:
+            logger.warning(f"[Gemini] Fallback for '{title[:40]}': {e}")
+
+        result = ollama_analyze_automation(title, description, steps) or \
+                 heuristic_automation(title, description, steps)
         result["mode"] = "gemini-fallback"
         return result
 
@@ -731,12 +1007,97 @@ def gemini_analyze_automation(row: dict, api_key: str) -> dict:
 # ─────────────────────────────────────────────
 # Excel generators
 # ─────────────────────────────────────────────
+
+# ── AI source display helpers ─────────────────────────────────────────────────
+
+# Colour palette per AI engine — background fill for the AI Source cell
+_AI_SOURCE_FILLS = {
+    "gemini":          PatternFill(start_color="E8F5E9", end_color="E8F5E9", fill_type="solid"),  # soft green
+    "gemini-fallback": PatternFill(start_color="FFF9C4", end_color="FFF9C4", fill_type="solid"),  # soft yellow
+    "openai":          PatternFill(start_color="E3F2FD", end_color="E3F2FD", fill_type="solid"),  # soft blue
+    "openai-fallback": PatternFill(start_color="FFF9C4", end_color="FFF9C4", fill_type="solid"),  # soft yellow
+    "offline":         PatternFill(start_color="EDE7F6", end_color="EDE7F6", fill_type="solid"),  # soft purple
+    "heuristic":       PatternFill(start_color="F3E5F5", end_color="F3E5F5", fill_type="solid"),  # soft lavender
+}
+_AI_SOURCE_FONT_COLORS = {
+    "gemini":          "1B5E20",   # dark green
+    "gemini-fallback": "F57F17",   # dark amber
+    "openai":          "0D47A1",   # dark blue
+    "openai-fallback": "F57F17",   # dark amber
+    "offline":         "4A148C",   # dark purple
+    "heuristic":       "6A1B9A",   # deep purple
+}
+_AI_SOURCE_LABELS = {
+    "gemini":          "🟢 Google Gemini",
+    "gemini-fallback": "⚠️ Gemini→Fallback",
+    "openai":          "🔵 OpenAI GPT",
+    "openai-fallback": "⚠️ OpenAI→Fallback",
+    "offline":         "🔌 Local Ollama",
+    "heuristic":       "📋 Keyword Rules",
+}
+
+def _ai_source_label(raw_mode: str) -> str:
+    """Convert internal mode string to a human-readable label with icon."""
+    key = str(raw_mode).lower().strip()
+    return _AI_SOURCE_LABELS.get(key, f"🤖 {raw_mode.upper()}")
+
+def _apply_ai_source_cell(cell, raw_mode: str):
+    """Apply colour fill + coloured bold text to an AI Source cell."""
+    key = str(raw_mode).lower().strip()
+    fill  = _AI_SOURCE_FILLS.get(key,      PatternFill(start_color="F5F5F5", end_color="F5F5F5", fill_type="solid"))
+    fcolor = _AI_SOURCE_FONT_COLORS.get(key, "424242")
+    cell.fill = fill
+    cell.font = Font(bold=True, color=fcolor, size=10)
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
+
+def _engine_banner(mode: str) -> str:
+    """One-line banner string describing which AI engine produced this report."""
+    labels = {
+        "gemini":  "Google Gemini AI",
+        "openai":  "OpenAI GPT-4o-mini",
+        "offline": "Local Ollama (Offline AI)",
+    }
+    return labels.get(mode.lower(), mode.upper())
+
+def _summary_engine_rows(ws, mode: str, data_start_row: int):
+    """
+    Write the AI Engine section at the bottom of a Summary sheet.
+    Shows engine name, colour, and what fallback means.
+    """
+    import datetime
+    engine = _engine_banner(mode)
+    ws.append([])
+    ws.append(["─── AI Engine Information ───", "", ""])
+    ws.append(["Primary AI Engine", engine, ""])
+    ws.append(["Fallback Engine",   "Local Ollama → Keyword Rules", ""])
+    ws.append(["Report Generated",  datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), ""])
+    ws.append([])
+    ws.append(["AI Source Legend", "", ""])
+
+    legend = [
+        ("🟢 Google Gemini",    "E8F5E9", "1B5E20", "Result produced by Google Gemini AI"),
+        ("🔵 OpenAI GPT",       "E3F2FD", "0D47A1", "Result produced by OpenAI GPT-4o-mini"),
+        ("🔌 Local Ollama",     "EDE7F6", "4A148C", "Result produced by local Ollama model"),
+        ("📋 Keyword Rules",    "F3E5F5", "6A1B9A", "Result from keyword heuristic engine"),
+        ("⚠️ Gemini→Fallback",  "FFF9C4", "F57F17", "Gemini failed — result from fallback engine"),
+        ("⚠️ OpenAI→Fallback",  "FFF9C4", "F57F17", "OpenAI failed — result from fallback engine"),
+    ]
+    for label, bg, fg, desc in legend:
+        r = ws.max_row + 1
+        ws.append([label, desc, ""])
+        ws.cell(row=r, column=1).fill = PatternFill(start_color=bg, end_color=bg, fill_type="solid")
+        ws.cell(row=r, column=1).font = Font(bold=True, color=fg, size=10)
+        ws.cell(row=r, column=2).font = Font(color="424242", size=10)
+
+
 def create_regression_excel(df: pd.DataFrame, session_id: str, mode: str) -> str:
     wb = Workbook()
     ws = wb.active
     ws.title = "Regression Results"
+
+    # ── Header row ──────────────────────────────────────────────────────────
     headers = ["#", "Test Case Title", "Description", "Risk Score", "Priority",
-               "AI Risk Explanation", "Recommended for Execution", "AI Mode"]
+               "AI Risk Explanation", "Recommended", "AI Source"]
     ws.append(headers)
 
     hfill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
@@ -746,60 +1107,103 @@ def create_regression_excel(df: pd.DataFrame, session_id: str, mode: str) -> str
         c.font = Font(color="FFFFFF", bold=True, size=11)
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
+    # ── Data rows ────────────────────────────────────────────────────────────
     priority_colors = {"P1": "FFCCCC", "P2": "FFF2CC", "P3": "D9EAD3"}
+
     for i, row in df.iterrows():
-        title = safe_str(row.get("Title") or row.get("title") or row.get("Test Case Title"), f"TC-{i+1}")
-        desc = safe_str(row.get("Description") or row.get("description"), "")
-        risk_score = row.get("Risk Score", 5)
-        priority = str(row.get("Priority", "P2"))
+        title       = safe_str(row.get("Title") or row.get("title") or row.get("Test Case Title"), f"TC-{i+1}")
+        desc        = safe_str(row.get("Description") or row.get("description"), "")
+        risk_score  = row.get("Risk Score", 5)
+        priority    = str(row.get("Priority", "P2"))
         explanation = safe_str(row.get("AI Risk Explanation"), "")
         recommended = str(row.get("Recommended for Execution", "No"))
-        ai_mode = str(row.get("AI Mode", mode)).upper()
+        raw_source  = str(row.get("AI Source") or row.get("AI Mode") or mode)
+        label       = _ai_source_label(raw_source)
 
-        ws.append([i + 1, title, desc, risk_score, priority, explanation, recommended, ai_mode])
+        ws.append([i + 1, title, desc, risk_score, priority, explanation, recommended, label])
+
+        data_row = i + 2
+        # Priority background on columns A–G
         color = priority_colors.get(priority, "FFFFFF")
         rfill = PatternFill(start_color=color, end_color=color, fill_type="solid")
-        for col in range(1, len(headers) + 1):
-            c = ws.cell(row=i + 2, column=col)
+        for col in range(1, 8):
+            c = ws.cell(row=data_row, column=col)
             c.fill = rfill
             c.alignment = Alignment(wrap_text=True, vertical="top")
 
+        # AI Source column (col 8) — its own colour per engine
+        _apply_ai_source_cell(ws.cell(row=data_row, column=8), raw_source)
+
+    # ── Column widths ────────────────────────────────────────────────────────
     ws.column_dimensions["A"].width = 6
     ws.column_dimensions["B"].width = 35
     ws.column_dimensions["C"].width = 40
     ws.column_dimensions["D"].width = 12
     ws.column_dimensions["E"].width = 10
     ws.column_dimensions["F"].width = 50
-    ws.column_dimensions["G"].width = 25
-    ws.column_dimensions["H"].width = 16
+    ws.column_dimensions["G"].width = 15
+    ws.column_dimensions["H"].width = 22   # AI Source — wider for icon + label
     ws.row_dimensions[1].height = 35
 
+    # ── Summary sheet ────────────────────────────────────────────────────────
     ws2 = wb.create_sheet("Summary")
-    p1 = len(df[df["Priority"] == "P1"])
-    p2 = len(df[df["Priority"] == "P2"])
-    p3 = len(df[df["Priority"] == "P3"])
+    p1    = len(df[df["Priority"] == "P1"])
+    p2    = len(df[df["Priority"] == "P2"])
+    p3    = len(df[df["Priority"] == "P3"])
     total = len(df)
-    rec = len(df[df["Recommended for Execution"] == "Yes"])
-    ws2.append([f"AI QA Decision Intelligence - Regression Summary ({mode.upper()} MODE)"])
+    rec   = len(df[df["Recommended for Execution"] == "Yes"])
+
+    ws2.append([f"AI QA Decision Intelligence — Regression Report", "", ""])
     ws2.merge_cells("A1:C1")
-    ws2["A1"].font = Font(bold=True, size=14, color="1E3A5F")
+    ws2["A1"].font      = Font(bold=True, size=14, color="1E3A5F")
     ws2["A1"].alignment = Alignment(horizontal="center")
+
+    ws2.append([f"AI Engine: {_engine_banner(mode)}", "", ""])
+    ws2.merge_cells("A2:C2")
+    ws2["A2"].font      = Font(bold=True, size=11, color="2E75B6")
+    ws2["A2"].alignment = Alignment(horizontal="center")
+
     ws2.append([])
     ws2.append(["Metric", "Count", "Percentage"])
-    ws2.append(["Total Test Cases", total, "100%"])
-    ws2.append(["P1 (Critical)", p1, f"{round(p1/total*100)}%" if total else "0%"])
-    ws2.append(["P2 (Moderate)", p2, f"{round(p2/total*100)}%" if total else "0%"])
-    ws2.append(["P3 (Low)", p3, f"{round(p3/total*100)}%" if total else "0%"])
-    ws2.append(["Recommended for Execution", rec, f"{round(rec/total*100)}%" if total else "0%"])
-    ws2.append(["AI Mode", mode.upper(), ""])
+    ws2.append(["Total Test Cases",          total, "100%"])
+    ws2.append(["P1 — Critical",             p1,    f"{round(p1/total*100)}%" if total else "0%"])
+    ws2.append(["P2 — Moderate",             p2,    f"{round(p2/total*100)}%" if total else "0%"])
+    ws2.append(["P3 — Low Risk",             p3,    f"{round(p3/total*100)}%" if total else "0%"])
+    ws2.append(["Recommended for Execution", rec,   f"{round(rec/total*100)}%" if total else "0%"])
+
     sfill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
     for col in range(1, 4):
-        c = ws2.cell(row=3, column=col)
+        c = ws2.cell(row=4, column=col)
         c.fill = sfill
         c.font = Font(color="FFFFFF", bold=True)
         c.alignment = Alignment(horizontal="center")
+
+    # AI source breakdown — how many rows came from each engine
+    ws2.append([])
+    ws2.append(["AI Source Breakdown", "Count", "% of Total"])
+    src_header_row = ws2.max_row
+    src_fill = PatternFill(start_color="37474F", end_color="37474F", fill_type="solid")
+    for col in range(1, 4):
+        c = ws2.cell(row=src_header_row, column=col)
+        c.fill = src_fill
+        c.font = Font(color="FFFFFF", bold=True)
+        c.alignment = Alignment(horizontal="center")
+
+    source_col = "AI Source" if "AI Source" in df.columns else "AI Mode"
+    if source_col in df.columns:
+        for src_val, count in df[source_col].value_counts().items():
+            pct = f"{round(count/total*100)}%" if total else "0%"
+            label = _ai_source_label(str(src_val))
+            r = ws2.max_row + 1
+            ws2.append([label, count, pct])
+            _apply_ai_source_cell(ws2.cell(row=r, column=1), str(src_val))
+            ws2.cell(row=r, column=2).alignment = Alignment(horizontal="center")
+            ws2.cell(row=r, column=3).alignment = Alignment(horizontal="center")
+
+    _summary_engine_rows(ws2, mode, ws2.max_row)
+
     for col in ["A", "B", "C"]:
-        ws2.column_dimensions[col].width = 30
+        ws2.column_dimensions[col].width = 32
 
     path = os.path.join(OUTPUT_DIR, f"regression_results_{session_id}.xlsx")
     wb.save(path)
@@ -810,8 +1214,10 @@ def create_automation_excel(df: pd.DataFrame, session_id: str, mode: str) -> str
     wb = Workbook()
     ws = wb.active
     ws.title = "Automation Analysis"
+
+    # ── Header row ──────────────────────────────────────────────────────────
     headers = ["#", "Test Case Title", "Description", "Automation Suitability",
-               "Confidence %", "AI Explanation", "AI Mode"]
+               "Confidence %", "AI Explanation", "AI Source"]
     ws.append(headers)
 
     hfill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
@@ -821,56 +1227,99 @@ def create_automation_excel(df: pd.DataFrame, session_id: str, mode: str) -> str
         c.font = Font(color="FFFFFF", bold=True, size=11)
         c.alignment = Alignment(horizontal="center", vertical="center")
 
+    # ── Data rows ────────────────────────────────────────────────────────────
     suit_colors = {"Automatable": "D9EAD3", "Partial": "FFF2CC", "Not Suitable": "FFCCCC"}
-    for i, row in df.iterrows():
-        title = safe_str(row.get("Title") or row.get("title") or row.get("Test Case Title"), f"TC-{i+1}")
-        desc = safe_str(row.get("Description") or row.get("description"), "")
-        suitability = str(row.get("Automation Suitability", "Partial"))
-        confidence = row.get("Confidence %", 50)
-        explanation = safe_str(row.get("AI Explanation"), "")
-        ai_mode = str(row.get("AI Mode", mode)).upper()
 
-        ws.append([i + 1, title, desc, suitability, f"{confidence}%", explanation, ai_mode])
+    for i, row in df.iterrows():
+        title       = safe_str(row.get("Title") or row.get("title") or row.get("Test Case Title"), f"TC-{i+1}")
+        desc        = safe_str(row.get("Description") or row.get("description"), "")
+        suitability = str(row.get("Automation Suitability", "Partial"))
+        confidence  = row.get("Confidence %", 50)
+        explanation = safe_str(row.get("AI Explanation"), "")
+        raw_source  = str(row.get("AI Source") or row.get("AI Mode") or mode)
+        label       = _ai_source_label(raw_source)
+
+        ws.append([i + 1, title, desc, suitability, f"{confidence}%", explanation, label])
+
+        data_row = i + 2
+        # Suitability background on columns A–F
         color = suit_colors.get(suitability, "FFFFFF")
         rfill = PatternFill(start_color=color, end_color=color, fill_type="solid")
-        for col in range(1, len(headers) + 1):
-            c = ws.cell(row=i + 2, column=col)
+        for col in range(1, 7):
+            c = ws.cell(row=data_row, column=col)
             c.fill = rfill
             c.alignment = Alignment(wrap_text=True, vertical="top")
 
+        # AI Source column (col 7) — its own colour per engine
+        _apply_ai_source_cell(ws.cell(row=data_row, column=7), raw_source)
+
+    # ── Column widths ────────────────────────────────────────────────────────
     ws.column_dimensions["A"].width = 6
     ws.column_dimensions["B"].width = 35
     ws.column_dimensions["C"].width = 40
     ws.column_dimensions["D"].width = 22
     ws.column_dimensions["E"].width = 14
     ws.column_dimensions["F"].width = 55
-    ws.column_dimensions["G"].width = 16
+    ws.column_dimensions["G"].width = 22   # AI Source
     ws.row_dimensions[1].height = 35
 
+    # ── Summary sheet ────────────────────────────────────────────────────────
     ws2 = wb.create_sheet("Summary")
-    total = len(df)
-    automatable = len(df[df["Automation Suitability"] == "Automatable"])
-    partial = len(df[df["Automation Suitability"] == "Partial"])
+    total        = len(df)
+    automatable  = len(df[df["Automation Suitability"] == "Automatable"])
+    partial      = len(df[df["Automation Suitability"] == "Partial"])
     not_suitable = len(df[df["Automation Suitability"] == "Not Suitable"])
-    ws2.append([f"AI QA Decision Intelligence - Automation Summary ({mode.upper()} MODE)"])
+
+    ws2.append([f"AI QA Decision Intelligence — Automation Report", "", ""])
     ws2.merge_cells("A1:C1")
-    ws2["A1"].font = Font(bold=True, size=14, color="1E3A5F")
+    ws2["A1"].font      = Font(bold=True, size=14, color="1E3A5F")
     ws2["A1"].alignment = Alignment(horizontal="center")
+
+    ws2.append([f"AI Engine: {_engine_banner(mode)}", "", ""])
+    ws2.merge_cells("A2:C2")
+    ws2["A2"].font      = Font(bold=True, size=11, color="2E75B6")
+    ws2["A2"].alignment = Alignment(horizontal="center")
+
     ws2.append([])
     ws2.append(["Category", "Count", "Percentage"])
-    ws2.append(["Total Analyzed", total, "100%"])
-    ws2.append(["Automatable", automatable, f"{round(automatable/total*100)}%" if total else "0%"])
-    ws2.append(["Partial", partial, f"{round(partial/total*100)}%" if total else "0%"])
-    ws2.append(["Not Suitable", not_suitable, f"{round(not_suitable/total*100)}%" if total else "0%"])
-    ws2.append(["AI Mode", mode.upper(), ""])
+    ws2.append(["Total Analyzed",  total,        "100%"])
+    ws2.append(["Automatable",     automatable,  f"{round(automatable/total*100)}%"  if total else "0%"])
+    ws2.append(["Partial",         partial,      f"{round(partial/total*100)}%"      if total else "0%"])
+    ws2.append(["Not Suitable",    not_suitable, f"{round(not_suitable/total*100)}%" if total else "0%"])
+
     sfill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
     for col in range(1, 4):
-        c = ws2.cell(row=3, column=col)
+        c = ws2.cell(row=4, column=col)
         c.fill = sfill
         c.font = Font(color="FFFFFF", bold=True)
         c.alignment = Alignment(horizontal="center")
+
+    # AI source breakdown
+    ws2.append([])
+    ws2.append(["AI Source Breakdown", "Count", "% of Total"])
+    src_header_row = ws2.max_row
+    src_fill = PatternFill(start_color="37474F", end_color="37474F", fill_type="solid")
+    for col in range(1, 4):
+        c = ws2.cell(row=src_header_row, column=col)
+        c.fill = src_fill
+        c.font = Font(color="FFFFFF", bold=True)
+        c.alignment = Alignment(horizontal="center")
+
+    source_col = "AI Source" if "AI Source" in df.columns else "AI Mode"
+    if source_col in df.columns:
+        for src_val, count in df[source_col].value_counts().items():
+            pct = f"{round(count/total*100)}%" if total else "0%"
+            label = _ai_source_label(str(src_val))
+            r = ws2.max_row + 1
+            ws2.append([label, count, pct])
+            _apply_ai_source_cell(ws2.cell(row=r, column=1), str(src_val))
+            ws2.cell(row=r, column=2).alignment = Alignment(horizontal="center")
+            ws2.cell(row=r, column=3).alignment = Alignment(horizontal="center")
+
+    _summary_engine_rows(ws2, mode, ws2.max_row)
+
     for col in ["A", "B", "C"]:
-        ws2.column_dimensions[col].width = 28
+        ws2.column_dimensions[col].width = 32
 
     path = os.path.join(OUTPUT_DIR, f"automation_results_{session_id}.xlsx")
     wb.save(path)
@@ -1056,26 +1505,17 @@ async def regression_analyze(
     capacity = total_execution_days * total_testers * cases_per_tester_per_day
 
     rows = [row.to_dict() for _, row in df.iterrows()]
+    loop = asyncio.get_event_loop()
 
-    # Route to correct batch processor based on mode
-    if mode == "online":
-        async def _analyze_risk(row):
-            return await asyncio.get_event_loop().run_in_executor(
-                None, openai_analyze_risk, row, openai_key
-            )
-        results = await ai_manager.process_rows(rows, "openai", _analyze_risk)
-    elif mode == "gemini":
-        async def _analyze_risk(row):
-            return await asyncio.get_event_loop().run_in_executor(
-                None, gemini_analyze_risk, row, gemini_key
-            )
-        results = await ai_manager.process_rows(rows, "gemini", _analyze_risk)
-    else:
-        async def _analyze_risk(row):
-            return await asyncio.get_event_loop().run_in_executor(
-                None, offline_analyze_risk, row, selected_model
-            )
-        results = await ai_manager.process_rows(rows, "ollama", _analyze_risk)
+    # Run all rows in parallel using ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(8, len(rows))) as pool:
+        if mode == "online":
+            futures = [loop.run_in_executor(pool, openai_analyze_risk, r, openai_key) for r in rows]
+        elif mode == "gemini":
+            futures = [loop.run_in_executor(pool, gemini_analyze_risk, r, gemini_key) for r in rows]
+        else:
+            futures = [loop.run_in_executor(pool, offline_analyze_risk, r, selected_model) for r in rows]
+        results = await asyncio.gather(*futures)
 
     df["Risk Score"] = [r["risk_score"] for r in results]
     df["Priority"] = [r["priority"] for r in results]
@@ -1134,25 +1574,17 @@ async def automation_analyze(
         raise HTTPException(status_code=400, detail="Gemini API key required for Gemini mode.")
 
     rows = [row.to_dict() for _, row in df.iterrows()]
+    loop = asyncio.get_event_loop()
 
-    if mode == "online":
-        async def _analyze_auto(row):
-            return await asyncio.get_event_loop().run_in_executor(
-                None, openai_analyze_automation, row, openai_key
-            )
-        results = await ai_manager.process_rows(rows, "openai", _analyze_auto)
-    elif mode == "gemini":
-        async def _analyze_auto(row):
-            return await asyncio.get_event_loop().run_in_executor(
-                None, gemini_analyze_automation, row, gemini_key
-            )
-        results = await ai_manager.process_rows(rows, "gemini", _analyze_auto)
-    else:
-        async def _analyze_auto(row):
-            return await asyncio.get_event_loop().run_in_executor(
-                None, offline_analyze_automation, row, selected_model
-            )
-        results = await ai_manager.process_rows(rows, "ollama", _analyze_auto)
+    # Run all rows in parallel using ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(8, len(rows))) as pool:
+        if mode == "online":
+            futures = [loop.run_in_executor(pool, openai_analyze_automation, r, openai_key) for r in rows]
+        elif mode == "gemini":
+            futures = [loop.run_in_executor(pool, gemini_analyze_automation, r, gemini_key) for r in rows]
+        else:
+            futures = [loop.run_in_executor(pool, offline_analyze_automation, r, selected_model) for r in rows]
+        results = await asyncio.gather(*futures)
 
     df["Automation Suitability"] = [r["suitability"] for r in results]
     df["Confidence %"] = [r["confidence"] for r in results]

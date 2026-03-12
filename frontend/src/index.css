@@ -487,3 +487,68 @@ body {
   border-color: var(--red) !important;
   box-shadow: 0 0 0 2px rgba(220,38,38,0.15);
 }
+
+/* ── GEMINI MODE BUTTON ── */
+.mode-active-gemini { background: #0f6b35 !important; color: white !important; box-shadow: 0 2px 8px rgba(15,107,53,0.25); }
+
+/* ── KEY TYPE AUTO-DETECT BADGE ── */
+.key-type-badge {
+  padding: 4px 12px; border-radius: 6px;
+  font-size: 0.78rem; font-weight: 700;
+  white-space: nowrap; border: 1.5px solid transparent;
+}
+.badge-openai  { background: #dbeafe; color: #1d4ed8; border-color: #93c5fd; }
+.badge-gemini  { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
+.badge-unknown { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+
+/* ── API KEY NOTE CODE ── */
+.api-key-note code {
+  background: rgba(0,0,0,0.08); padding: 1px 5px;
+  border-radius: 3px; font-family: monospace; font-size: 0.78rem;
+}
+
+/* ── API KEY INPUT STATES ── */
+.input-missing  { border-color: #f59e0b !important; box-shadow: 0 0 0 2px rgba(245,158,11,0.2); }
+.input-valid    { border-color: #10b981 !important; box-shadow: 0 0 0 2px rgba(16,185,129,0.2); }
+.input-invalid  { border-color: #ef4444 !important; box-shadow: 0 0 0 2px rgba(239,68,68,0.2); }
+.key-status.missing { color: #f59e0b; font-size: 0.82rem; font-weight: 600; animation: pulse 1.5s infinite; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
+
+/* ── STOP BUTTON ── */
+.btn-stop {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 12px 24px; border-radius: 10px;
+  background: #fff; color: #c0392b;
+  border: 2px solid #c0392b; font-weight: 700;
+  font-size: 0.95rem; cursor: pointer;
+  transition: all 0.2s ease;
+}
+.btn-stop:hover {
+  background: #c0392b; color: #fff;
+  box-shadow: 0 4px 14px rgba(192,57,43,0.35);
+  transform: translateY(-1px);
+}
+.btn-stop:active { transform: translateY(0); }
+
+/* Stop button inside progress card */
+.btn-stop-inline {
+  background: transparent; border: 1.5px solid rgba(192,57,43,0.5);
+  color: #c0392b; border-radius: 6px; padding: 4px 12px;
+  font-size: 0.8rem; font-weight: 600; cursor: pointer;
+  transition: all 0.2s; white-space: nowrap;
+}
+.btn-stop-inline:hover { background: #c0392b; color: #fff; border-color: #c0392b; }
+
+/* Progress footer — text + stop button side by side */
+.progress-footer {
+  display: flex; align-items: center;
+  justify-content: space-between; gap: 12px;
+  margin-top: 8px; flex-wrap: wrap;
+}
+.progress-footer .progress-text { margin: 0; }
+
+/* Disabled run button style while loading */
+.btn-disabled { opacity: 0.7; cursor: not-allowed !important; }
+
+/* Action row — run + stop side by side */
+.action-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }

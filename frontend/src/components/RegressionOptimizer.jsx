@@ -1,14 +1,16 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 
 const API_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
-export default function RegressionOptimizer({ mode, openaiKey, keyValid, selectedModel }) {
+export default function RegressionOptimizer({ mode, apiKey, keyType, keyValid, selectedModel }) {
   const [file, setFile] = useState(null);
   const [formData, setFormData] = useState({ recent_modification_days: "", total_execution_days: "", total_testers: "", cases_per_tester_per_day: "" });
   const [loading, setLoading] = useState(false);
+  const [stopped, setStopped] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [dragOver, setDragOver] = useState(false);
+  const abortRef = useRef(null);
 
   const handleDrop = (e) => {
     e.preventDefault(); setDragOver(false);
@@ -17,37 +19,66 @@ export default function RegressionOptimizer({ mode, openaiKey, keyValid, selecte
     else setError("Please upload a valid .xlsx file.");
   };
 
+  const handleStop = () => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    setStopped(true);
+    setLoading(false);
+    setError("⛔ Analysis stopped by user.");
+  };
+
   const handleSubmit = async () => {
     if (!file) return setError("Please upload an Excel file.");
     if (!formData.total_execution_days || !formData.total_testers || !formData.cases_per_tester_per_day)
       return setError("Please fill all mandatory fields.");
-    if (mode === "online" && !openaiKey) return setError("Please enter your OpenAI API key in the header.");
-    if (mode === "online" && keyValid === false) return setError("Your OpenAI API key is invalid. Please validate it first.");
+    if ((mode === "online" || mode === "gemini") && (!apiKey || apiKey.trim() === ""))
+      return setError("Please enter your API key in the header bar above.");
+    if ((mode === "online" || mode === "gemini") && keyValid === false)
+      return setError("Your API key is invalid. Please check it and try again.");
 
-    setError(null); setLoading(true); setResult(null);
+    setError(null); setLoading(true); setResult(null); setStopped(false);
+
+    // Create AbortController for this request
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     const fd = new FormData();
     fd.append("file", file);
     fd.append("total_execution_days", formData.total_execution_days);
     fd.append("total_testers", formData.total_testers);
     fd.append("cases_per_tester_per_day", formData.cases_per_tester_per_day);
     fd.append("mode", mode);
-    if (mode === "online" && openaiKey) fd.append("openai_key", openaiKey);
-    if (mode === "offline" && selectedModel) fd.append("ollama_model", selectedModel);
+    if (mode === "online")  fd.append("openai_key", apiKey);
+    if (mode === "gemini")  fd.append("gemini_key", apiKey);
+    if (mode === "offline") fd.append("ollama_model", selectedModel);
     if (formData.recent_modification_days) fd.append("recent_modification_days", formData.recent_modification_days);
 
     try {
-      const res = await fetch(`${API_URL}/api/regression/analyze`, { method: "POST", body: fd });
+      const res = await fetch(`${API_URL}/api/regression/analyze`, {
+        method: "POST",
+        body: fd,
+        signal: controller.signal,
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Analysis failed");
       setResult(data);
     } catch (err) {
-      setError(err.message);
+      if (err.name === "AbortError") {
+        // Already handled by handleStop
+      } else {
+        setError(err.message);
+      }
     } finally {
+      abortRef.current = null;
       setLoading(false);
     }
   };
 
   const capacity = formData.total_execution_days * formData.total_testers * formData.cases_per_tester_per_day || 0;
+  const modeLabel = mode === "online" ? "OpenAI" : mode === "gemini" ? "Gemini" : "Offline";
+  const modeIcon  = mode === "online" ? "🔵" : mode === "gemini" ? "🟢" : "🔌";
 
   return (
     <div className="feature-page">
@@ -56,8 +87,8 @@ export default function RegressionOptimizer({ mode, openaiKey, keyValid, selecte
         <h2 className="feature-title">Regression Optimizer</h2>
         <p className="feature-desc">
           Upload your test suite (up to 2,000 cases). AI assigns P1/P2/P3 priorities based on risk and execution capacity.
-          {" "}<span className={`mode-badge ${mode === "online" ? "mode-badge-online" : "mode-badge-offline"}`}>
-            {mode === "online" ? "🌐 OpenAI GPT — Enhanced Analysis" : "🔌 Offline — Local AI"}
+          {" "}<span className={`mode-badge ${mode === "online" ? "mode-badge-online" : mode === "gemini" ? "mode-badge-gemini" : "mode-badge-offline"}`}>
+            {modeIcon} {modeLabel}
           </span>
         </p>
       </div>
@@ -116,15 +147,31 @@ export default function RegressionOptimizer({ mode, openaiKey, keyValid, selecte
       {error && <div className="error-msg">⚠ {error}</div>}
 
       <div className="action-row">
-        <button className="btn-primary" onClick={handleSubmit} disabled={loading}>
-          {loading ? <span className="loading-content"><span className="spinner" /> Analyzing with {mode === "online" ? "OpenAI..." : "Local AI..."}</span> : `⚡ Run ${mode === "online" ? "OpenAI" : "Offline"} Analysis`}
-        </button>
+        {!loading ? (
+          <button className="btn-primary" onClick={handleSubmit}>
+            ⚡ Run {modeLabel} Analysis
+          </button>
+        ) : (
+          <>
+            <button className="btn-primary btn-disabled" disabled>
+              <span className="loading-content"><span className="spinner" /> {modeIcon} Analyzing with {modeLabel}...</span>
+            </button>
+            <button className="btn-stop" onClick={handleStop}>
+              ⏹ Stop
+            </button>
+          </>
+        )}
       </div>
 
       {loading && (
         <div className="progress-card">
           <div className="progress-bar-track"><div className="progress-bar-fill animated" /></div>
-          <p className="progress-text">{mode === "online" ? "🌐 OpenAI GPT is analyzing risk scores..." : "🔌 Local AI is calculating execution plan..."}</p>
+          <div className="progress-footer">
+            <p className="progress-text">
+              {modeIcon} {modeLabel} is analyzing risk scores — this may take a moment...
+            </p>
+            <button className="btn-stop-inline" onClick={handleStop}>⏹ Stop Analysis</button>
+          </div>
         </div>
       )}
 
@@ -132,8 +179,8 @@ export default function RegressionOptimizer({ mode, openaiKey, keyValid, selecte
         <div className="results-section">
           <div className="results-header-row">
             <h3 className="results-title">📊 Analysis Complete</h3>
-            <span className={`mode-badge ${result.mode === "online" ? "mode-badge-online" : "mode-badge-offline"}`}>
-              {result.mode === "online" ? "🌐 OpenAI GPT" : "🔌 Offline AI"}
+            <span className={`mode-badge ${result.mode === "online" ? "mode-badge-online" : result.mode === "gemini" ? "mode-badge-gemini" : "mode-badge-offline"}`}>
+              {result.mode === "online" ? "🔵 OpenAI GPT" : result.mode === "gemini" ? "🟢 Google Gemini" : "🔌 Offline AI"}
             </span>
           </div>
           <div className="stats-grid">
