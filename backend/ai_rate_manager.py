@@ -1,4 +1,13 @@
+"""
+AI Rate Manager — Token Bucket + Request Queue + Response Cache
+Handles OpenAI and Gemini free-tier rate limits gracefully.
 
+Architecture:
+  Request → Cache Check → Queue → Token Bucket → AI API
+                ↓              ↓         ↓
+          Cache Hit        Priority   Retry with
+          (instant)        Ordering   Backoff
+"""
 
 import asyncio
 import hashlib
