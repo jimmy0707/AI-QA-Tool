@@ -4,17 +4,28 @@ services/gemini_service.py
 GEMINI MODE — Google Gemini AI (google-genai SDK).
 
 Features:
-  - Sliding-window rate limiter  (5 RPM free tier)
+  - Serial token-bucket rate limiter (5 RPM = 1 call every 12 s)
   - Model auto-discovery + per-key cache  (list_models once, never per request)
   - Precise error classification  (quota / network / invalid-key never confused)
   - Safe JSON parser  (empty / malformed response → fallback, never crash)
   - Fallback chain: Gemini → Ollama → Heuristic
+
+WHY SERIAL (not parallel) FOR GEMINI FREE TIER
+───────────────────────────────────────────────
+With 8 parallel workers and a sliding-window limiter, all threads grab their
+rate-limit slot at nearly the same moment and fire simultaneously — Google
+sees a burst and returns 429 RESOURCE_EXHAUSTED for most of them even though
+our counter said "5 slots available".
+
+The fix: a single global threading.Lock() (_gemini_call_lock) so only ONE
+thread calls Gemini at a time, and we hard-sleep 12 s between calls
+(60 s ÷ 5 RPM = 12 s minimum gap). This is slower but 100% reliable on the
+free tier. Workers queue up and wait their turn.
 """
 
 import json
 import time
 import threading
-import collections
 
 from fastapi import HTTPException
 from google import genai
@@ -43,40 +54,42 @@ def _extract_auto_fields(row: dict):
 
 
 # ── Rate limiter state (module-level — shared across all threads) ─────────────
-_gemini_model_cache: dict = {}        # key_fingerprint → model_name string
+_gemini_model_cache: dict = {}    # key_fingerprint → model_name string
 _gemini_list_lock         = threading.Lock()
-_gemini_rpm_limit         = 5         # max requests per 60 s (free tier)
-_gemini_rpm_window        = 60.0      # seconds
-_gemini_timestamps: dict  = {}        # key_fingerprint → deque of monotonic timestamps
-_gemini_rate_lock         = threading.Lock()
+
+# Serial call gate — only ONE Gemini request at a time across all workers
+_gemini_call_lock         = threading.Lock()
+_gemini_last_call_time    = 0.0   # monotonic timestamp of last completed call
+_GEMINI_MIN_GAP           = 4.5   # seconds between calls (60s / 15 RPM + 0.5s buffer for 3.1-flash-lite)
 
 
 # ── Rate limiter ──────────────────────────────────────────────────────────────
 
 def _gemini_rate_wait(key_fingerprint: str):
     """
-    Block the calling thread until it is safe to fire another Gemini request.
-    Implements a sliding-window limiter capped at _gemini_rpm_limit RPM.
-    Called from ThreadPoolExecutor workers — time.sleep() is intentional.
+    Acquire the global Gemini call lock and wait until the minimum gap
+    since the last call has elapsed.
+
+    This serialises ALL Gemini calls across all ThreadPoolExecutor workers.
+    Only one request fires at a time — the rest queue up here and wait.
+    This is the only reliable way to respect 5 RPM on the free tier when
+    multiple workers are running in parallel.
     """
-    with _gemini_rate_lock:
-        if key_fingerprint not in _gemini_timestamps:
-            _gemini_timestamps[key_fingerprint] = collections.deque()
-        timestamps = _gemini_timestamps[key_fingerprint]
+    global _gemini_last_call_time
 
-        now = time.monotonic()
-        while timestamps and now - timestamps[0] >= _gemini_rpm_window:
-            timestamps.popleft()
+    # Acquire the lock — this blocks until the previous worker releases it
+    _gemini_call_lock.acquire()
 
-        if len(timestamps) >= _gemini_rpm_limit:
-            wait = _gemini_rpm_window - (now - timestamps[0]) + 0.1
-            logger.info(f"[Gemini] Rate limit — waiting {wait:.1f}s (5 RPM free tier)")
-            time.sleep(wait)
-            now = time.monotonic()
-            while timestamps and now - timestamps[0] >= _gemini_rpm_window:
-                timestamps.popleft()
+    # Now we hold the lock. Wait out the minimum gap.
+    now     = time.monotonic()
+    elapsed = now - _gemini_last_call_time
+    if elapsed < _GEMINI_MIN_GAP:
+        wait = _GEMINI_MIN_GAP - elapsed
+        logger.info(f"[Gemini] Spacing calls — waiting {wait:.1f}s to stay within 5 RPM")
+        time.sleep(wait)
 
-        timestamps.append(time.monotonic())
+    # Record the time this call starts — lock is released in call_gemini()
+    _gemini_last_call_time = time.monotonic()
 
 
 # ── Model discovery ───────────────────────────────────────────────────────────
@@ -109,10 +122,26 @@ def _discover_gemini_model(client) -> str:
 
     def _priority(name: str) -> tuple:
         n = name.lower()
-        tier    = 0 if "flash" in n else 1 if "pro" in n else 2
-        version = 0 if "2.0" in n else 1 if "1.5" in n else 2 if "1.0" in n else 3
-        latest  = 0 if "latest" in n else 1
-        return (tier, version, latest)
+
+        # Never pick these — wrong modality or no text generation
+        SKIP = ["tts", "robotics", "computer-use", "deep-research",
+                "nano-banana", "imagen", "veo", "embedding", "audio", "live"]
+        if any(s in n for s in SKIP): return (9, 9, 9)
+        if "image" in n and "flash-image" not in n: return (9, 9, 9)
+
+        # PINNED FIRST: gemini-3.1-flash-lite — 15 RPM, 500 RPD (best free tier)
+        if "3.1" in n and "flash-lite" in n: return (0, 0, 0)
+
+        # Second choice: any other flash-lite
+        if "flash-lite" in n: return (1, 0, 0)
+
+        # Third: regular flash models
+        if "flash" in n:
+            version = 0 if "3"   in n else                       1 if "2.5" in n else                       2 if "2.0" in n else 3
+            return (2, version, 0)
+
+        # Last resort: pro models
+        return (3, 0, 0)
 
     names.sort(key=_priority)
     if not names:
@@ -153,36 +182,50 @@ def _safe_parse_gemini_json(raw: str, context: str) -> dict | None:
 def call_gemini(prompt: str, api_key: str) -> str:
     """
     Rate-limited, model-cached Gemini call.
+    _gemini_rate_wait() acquires _gemini_call_lock — we ALWAYS release it
+    in the finally block so the next queued worker can proceed.
     On 404 (model retired), clears cache and rediscovers once automatically.
     """
     key_fingerprint = api_key[-8:]
     client          = genai.Client(api_key=api_key)
 
+    # Acquire the serial lock + enforce minimum gap between calls
     _gemini_rate_wait(key_fingerprint)
-    model_name = _get_gemini_model(client, key_fingerprint)
-
-    def _call(model: str) -> str:
-        response = client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=genai_types.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=300,
-                response_mime_type="application/json",
-            ),
-        )
-        return response.text or ""
 
     try:
-        return _call(model_name)
-    except Exception as e:
-        if "404" in str(e) or "NOT_FOUND" in str(e):
-            logger.warning(f"[Gemini] Model '{model_name}' gone — rediscovering...")
-            with _gemini_list_lock:
-                _gemini_model_cache.pop(key_fingerprint, None)
-            model_name = _get_gemini_model(client, key_fingerprint)
-            return _call(model_name)
-        raise
+        model_name = _get_gemini_model(client, key_fingerprint)
+
+        def _call(model: str) -> str:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=300,
+                    response_mime_type="application/json",
+                ),
+            )
+            return response.text or ""
+
+        try:
+            result = _call(model_name)
+            logger.info(f"[Gemini] Call succeeded with {model_name}")
+            return result
+        except Exception as e:
+            if "404" in str(e) or "NOT_FOUND" in str(e):
+                logger.warning(f"[Gemini] Model '{model_name}' gone — rediscovering...")
+                with _gemini_list_lock:
+                    _gemini_model_cache.pop(key_fingerprint, None)
+                model_name = _get_gemini_model(client, key_fingerprint)
+                return _call(model_name)
+            raise
+
+    finally:
+        # Always release so the next worker can proceed
+        try:
+            _gemini_call_lock.release()
+        except RuntimeError:
+            pass
 
 
 # ── Error classifier ──────────────────────────────────────────────────────────
@@ -263,11 +306,16 @@ def gemini_analyze_risk(row: dict, api_key: str) -> dict:
 
     except Exception as e:
         error_type = _classify_gemini_error(e)
+        logger.warning(f"[Gemini] FULL ERROR for '{title[:40]}': {type(e).__name__}: {e}")
         if error_type == "invalid_key":
             logger.warning(f"[Gemini] Invalid API key for '{title[:40]}'")
             raise HTTPException(status_code=401, detail="Invalid Gemini API key.")
         elif error_type == "quota":
-            logger.warning(f"[Gemini] Quota/rate-limit for '{title[:40]}' — falling back to Ollama")
+            logger.warning(f"[Gemini] Quota exhausted for '{title[:40]}' — clearing model cache and falling back to Ollama")
+            # Clear model cache — next request will rediscover a model with available quota
+            key_fp = api_key[-8:]
+            with _gemini_list_lock:
+                _gemini_model_cache.pop(key_fp, None)
         elif error_type == "network":
             logger.warning(f"[Gemini] Network error for '{title[:40]}': {e} — falling back")
         else:
@@ -313,11 +361,15 @@ def gemini_analyze_automation(row: dict, api_key: str) -> dict:
 
     except Exception as e:
         error_type = _classify_gemini_error(e)
+        logger.warning(f"[Gemini] FULL ERROR for '{title[:40]}': {type(e).__name__}: {e}")
         if error_type == "invalid_key":
             logger.warning(f"[Gemini] Invalid API key for '{title[:40]}'")
             raise HTTPException(status_code=401, detail="Invalid Gemini API key.")
         elif error_type == "quota":
-            logger.warning(f"[Gemini] Quota/rate-limit for '{title[:40]}' — falling back to Ollama")
+            logger.warning(f"[Gemini] Quota exhausted for '{title[:40]}' — clearing model cache and falling back to Ollama")
+            key_fp = api_key[-8:]
+            with _gemini_list_lock:
+                _gemini_model_cache.pop(key_fp, None)
         elif error_type == "network":
             logger.warning(f"[Gemini] Network error for '{title[:40]}': {e} — falling back")
         else:

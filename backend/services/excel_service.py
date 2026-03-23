@@ -6,6 +6,7 @@ Excel report generators for both Regression and Automation analysis.
 Features:
   - AI Source column with colour-coded badges per engine
   - Release-aware columns auto-detected (Base/Adjusted score, Adjustment Reason)
+  - History-aware columns auto-detected (Base Risk Score, Adjusted Risk Score, History Adj Reason)
   - Summary sheet with AI Source Breakdown + Release Adjustment tables
   - Full colour legend on Summary sheet
 """
@@ -51,7 +52,15 @@ _ADJ_FILLS = {
     "changed": PatternFill(start_color="C8E6C9", end_color="C8E6C9", fill_type="solid"),
     "frozen":  PatternFill(start_color="BBDEFB", end_color="BBDEFB", fill_type="solid"),
     "stale":   PatternFill(start_color="FFE0B2", end_color="FFE0B2", fill_type="solid"),
+    "fail":    PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid"),
     "none":    PatternFill(start_color="F5F5F5", end_color="F5F5F5", fill_type="solid"),
+}
+
+# Score cell fills for Base / Adjusted score columns
+_SCORE_FILLS = {
+    "high":   PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid"),  # 8-10 red
+    "medium": PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"),  # 5-7  amber
+    "low":    PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid"),  # 1-4  green
 }
 
 
@@ -71,6 +80,19 @@ def _apply_ai_source_cell(cell, raw_mode: str):
     cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
 
 
+def _score_fill(score) -> PatternFill:
+    """Return background fill colour for a numeric risk score."""
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return _SCORE_FILLS["low"]
+    if s >= 8:
+        return _SCORE_FILLS["high"]
+    elif s >= 5:
+        return _SCORE_FILLS["medium"]
+    return _SCORE_FILLS["low"]
+
+
 def _engine_banner(mode: str) -> str:
     return {
         "gemini":  "Google Gemini AI",
@@ -81,6 +103,7 @@ def _engine_banner(mode: str) -> str:
 
 def _adj_fill(reason_str: str):
     r = (reason_str or "").lower()
+    if "fail"    in r: return _ADJ_FILLS["fail"]
     if "changed" in r: return _ADJ_FILLS["changed"]
     if "frozen"  in r: return _ADJ_FILLS["frozen"]
     if "stale"   in r: return _ADJ_FILLS["stale"]
@@ -137,6 +160,42 @@ def _write_ai_source_breakdown(ws, df: pd.DataFrame, total: int):
             ws.cell(row=r, column=3).alignment = Alignment(horizontal="center")
 
 
+def _write_history_adjustment_summary(ws, df: pd.DataFrame, total: int):
+    """Append history-adjustment breakdown table to the Summary sheet."""
+    if "History Adj Reason" not in df.columns:
+        return
+
+    ws.append([])
+    ws.append(["History Adjustment Summary", "Count", "% of Total"])
+    hdr_row  = ws.max_row
+    hdr_fill = PatternFill(start_color="4A148C", end_color="4A148C", fill_type="solid")
+    for col in range(1, 4):
+        c = ws.cell(row=hdr_row, column=col)
+        c.fill = hdr_fill
+        c.font = Font(color="FFFFFF", bold=True)
+        c.alignment = Alignment(horizontal="center")
+
+    col_data = df["History Adj Reason"].fillna("")
+    fail_ct   = col_data.str.contains("failure",  case=False, na=False).sum()
+    stale_ct  = col_data.str.contains("stale",    case=False, na=False).sum()
+    frozen_ct = col_data.str.contains("frozen",   case=False, na=False).sum()
+    none_ct   = total - fail_ct - stale_ct - frozen_ct
+
+    for label, count, bg, fg in [
+        ("🔴 Previous release failure (+2)", fail_ct,   "FFCCCC", "B71C1C"),
+        ("🟠 Stale — not run 3 releases (+2)", stale_ct, "FFE0B2", "E65100"),
+        ("🔵 Frozen module (−3)",             frozen_ct, "BBDEFB", "0D47A1"),
+        ("⬜ No history adjustment",           none_ct,   "F5F5F5", "424242"),
+    ]:
+        pct = f"{round(count / total * 100)}%" if total else "0%"
+        r   = ws.max_row + 1
+        ws.append([label, count, pct])
+        ws.cell(row=r, column=1).fill = PatternFill(start_color=bg, end_color=bg, fill_type="solid")
+        ws.cell(row=r, column=1).font = Font(bold=True, color=fg, size=10)
+        ws.cell(row=r, column=2).alignment = Alignment(horizontal="center")
+        ws.cell(row=r, column=3).alignment = Alignment(horizontal="center")
+
+
 # ── Public generators ────────────────────────────────────────────────────────
 
 def create_regression_excel(df: pd.DataFrame, session_id: str, mode: str) -> str:
@@ -145,16 +204,34 @@ def create_regression_excel(df: pd.DataFrame, session_id: str, mode: str) -> str
     ws.title = "Regression Results"
 
     has_release = "Adjusted Risk Score" in df.columns
+    has_history = "History Adj Reason"  in df.columns
 
     # ── Headers ──────────────────────────────────────────────────────────────
-    if has_release:
-        headers = ["#", "Test Case Title", "Description", "Module",
-                   "Base Risk Score", "Adjusted Risk Score", "Adjustment Reason",
-                   "Priority", "AI Risk Explanation", "Recommended", "AI Source"]
+    if has_history:
+        # Full pipeline: AI + Release-aware + History-aware
+        headers = [
+            "#", "Test Case Title", "Description", "Module",
+            "Base Risk Score",       # AI raw score (before any adjustment)
+            "Adjusted Risk Score",   # Final score after all adjustments
+            "Adjustment Reason",     # Layer 1 (release-context) reasons
+            "History Adj Reason",    # Layer 2 (history) reasons
+            "Priority",
+            "AI Risk Explanation",
+            "Recommended",
+            "AI Source",
+        ]
+    elif has_release:
+        headers = [
+            "#", "Test Case Title", "Description", "Module",
+            "Base Risk Score", "Adjusted Risk Score", "Adjustment Reason",
+            "Priority", "AI Risk Explanation", "Recommended", "AI Source",
+        ]
     else:
-        headers = ["#", "Test Case Title", "Description",
-                   "Risk Score", "Priority", "AI Risk Explanation",
-                   "Recommended", "AI Source"]
+        headers = [
+            "#", "Test Case Title", "Description",
+            "Risk Score", "Priority", "AI Risk Explanation",
+            "Recommended", "AI Source",
+        ]
 
     ws.append(headers)
     hfill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
@@ -180,7 +257,53 @@ def create_regression_excel(df: pd.DataFrame, session_id: str, mode: str) -> str
         color = priority_colors.get(priority, "FFFFFF")
         rfill = PatternFill(start_color=color, end_color=color, fill_type="solid")
 
-        if has_release:
+        if has_history:
+            module        = safe_str(row.get("Module") or row.get("module"), "—")
+            base_score    = row.get("Base Risk Score", 5)
+            adj_score     = row.get("Adjusted Risk Score", base_score)
+            adj_reason    = safe_str(row.get("Adjustment Reason"), "No adjustment")
+            hist_reason   = safe_str(row.get("History Adj Reason"), "No history adjustment")
+
+            ws.append([
+                i + 1, title, desc, module,
+                base_score, adj_score,
+                adj_reason, hist_reason,
+                priority, explanation, recommended, src_label,
+            ])
+
+            # Row background — priority colour for most columns
+            for col in [1, 2, 3, 4, 9, 10, 11]:
+                c = ws.cell(row=data_row, column=col)
+                c.fill = rfill
+                c.alignment = Alignment(wrap_text=True, vertical="top")
+
+            # Base Risk Score — score-based colour
+            base_cell = ws.cell(row=data_row, column=5)
+            base_cell.fill      = _score_fill(base_score)
+            base_cell.font      = Font(bold=True, size=11)
+            base_cell.alignment = Alignment(horizontal="center", vertical="center")
+
+            # Adjusted Risk Score — score-based colour (bold, larger)
+            adj_cell = ws.cell(row=data_row, column=6)
+            adj_cell.fill      = _score_fill(adj_score)
+            adj_cell.font      = Font(bold=True, size=12)
+            adj_cell.alignment = Alignment(horizontal="center", vertical="center")
+
+            # Adjustment Reason (Layer 1)
+            reason1_cell = ws.cell(row=data_row, column=7)
+            reason1_cell.fill      = _adj_fill(adj_reason)
+            reason1_cell.font      = Font(size=10, italic=True)
+            reason1_cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+            # History Adj Reason (Layer 2)
+            reason2_cell = ws.cell(row=data_row, column=8)
+            reason2_cell.fill      = _adj_fill(hist_reason)
+            reason2_cell.font      = Font(size=10, italic=True, color="4A148C")
+            reason2_cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+            _apply_ai_source_cell(ws.cell(row=data_row, column=12), raw_source)
+
+        elif has_release:
             module     = safe_str(row.get("Module") or row.get("module"), "—")
             base_score = row.get("Base Risk Score", 5)
             adj_score  = row.get("Adjusted Risk Score", base_score)
@@ -193,6 +316,18 @@ def create_regression_excel(df: pd.DataFrame, session_id: str, mode: str) -> str
                 c = ws.cell(row=data_row, column=col)
                 c.fill = rfill
                 c.alignment = Alignment(wrap_text=True, vertical="top")
+
+            # Base score cell
+            base_cell = ws.cell(row=data_row, column=5)
+            base_cell.fill      = _score_fill(base_score)
+            base_cell.font      = Font(bold=True, size=11)
+            base_cell.alignment = Alignment(horizontal="center", vertical="center")
+
+            # Adjusted score cell
+            adj_cell = ws.cell(row=data_row, column=6)
+            adj_cell.fill      = _score_fill(adj_score)
+            adj_cell.font      = Font(bold=True, size=12)
+            adj_cell.alignment = Alignment(horizontal="center", vertical="center")
 
             reason_cell = ws.cell(row=data_row, column=7)
             reason_cell.fill = _adj_fill(adj_reason)
@@ -208,14 +343,26 @@ def create_regression_excel(df: pd.DataFrame, session_id: str, mode: str) -> str
                 c = ws.cell(row=data_row, column=col)
                 c.fill = rfill
                 c.alignment = Alignment(wrap_text=True, vertical="top")
+
+            score_cell = ws.cell(row=data_row, column=4)
+            score_cell.fill      = _score_fill(risk_score)
+            score_cell.font      = Font(bold=True, size=11)
+            score_cell.alignment = Alignment(horizontal="center", vertical="center")
+
             _apply_ai_source_cell(ws.cell(row=data_row, column=8), raw_source)
 
     # ── Column widths ─────────────────────────────────────────────────────────
-    widths = (
-        {"A": 6, "B": 32, "C": 38, "D": 16, "E": 14, "F": 16, "G": 45, "H": 10, "I": 48, "J": 14, "K": 22}
-        if has_release else
-        {"A": 6, "B": 35, "C": 40, "D": 12, "E": 10, "F": 50, "G": 15, "H": 22}
-    )
+    if has_history:
+        widths = {
+            "A": 6,  "B": 30, "C": 35, "D": 14,
+            "E": 14, "F": 16, "G": 38, "H": 38,
+            "I": 10, "J": 46, "K": 14, "L": 22,
+        }
+    elif has_release:
+        widths = {"A": 6, "B": 32, "C": 38, "D": 16, "E": 14, "F": 16, "G": 45, "H": 10, "I": 48, "J": 14, "K": 22}
+    else:
+        widths = {"A": 6, "B": 35, "C": 40, "D": 12, "E": 10, "F": 50, "G": 15, "H": 22}
+
     for col_letter, width in widths.items():
         ws.column_dimensions[col_letter].width = width
     ws.row_dimensions[1].height = 35
@@ -236,6 +383,8 @@ def create_regression_excel(df: pd.DataFrame, session_id: str, mode: str) -> str
     mode_line = f"AI Engine: {_engine_banner(mode)}"
     if has_release:
         mode_line += "  |  Release-Aware Prioritization: ON"
+    if has_history:
+        mode_line += "  |  History-Based Adjustment: ON"
     ws2.append([mode_line, "", ""])
     ws2.merge_cells("A2:C2")
     ws2["A2"].font      = Font(bold=True, size=11, color="2E75B6")
@@ -256,10 +405,10 @@ def create_regression_excel(df: pd.DataFrame, session_id: str, mode: str) -> str
         c.font = Font(color="FFFFFF", bold=True)
         c.alignment = Alignment(horizontal="center")
 
-    # Release adjustment summary
+    # Release adjustment summary (Layer 1)
     if has_release and "Adjustment Reason" in df.columns:
         ws2.append([])
-        ws2.append(["Release Adjustment Summary", "Count", "% of Total"])
+        ws2.append(["Release Adjustment Summary (Layer 1)", "Count", "% of Total"])
         adj_hdr = ws2.max_row
         adj_fill_hdr = PatternFill(start_color="37474F", end_color="37474F", fill_type="solid")
         for col in range(1, 4):
@@ -276,8 +425,8 @@ def create_regression_excel(df: pd.DataFrame, session_id: str, mode: str) -> str
         for label, count, bg, fg in [
             ("🟢 Changed module (boosted)", changed_ct, "C8E6C9", "1B5E20"),
             ("🔵 Frozen module (reduced)",  frozen_ct,  "BBDEFB", "0D47A1"),
-            ("🟠 Stale test (boosted)",      stale_ct,  "FFE0B2", "E65100"),
-            ("⬜ No adjustment",             none_ct,   "F5F5F5", "424242"),
+            ("🟠 Stale test (boosted)",     stale_ct,   "FFE0B2", "E65100"),
+            ("⬜ No adjustment",            none_ct,    "F5F5F5", "424242"),
         ]:
             pct = f"{round(count/total*100)}%" if total else "0%"
             r   = ws2.max_row + 1
@@ -286,6 +435,9 @@ def create_regression_excel(df: pd.DataFrame, session_id: str, mode: str) -> str
             ws2.cell(row=r, column=1).font = Font(bold=True, color=fg, size=10)
             ws2.cell(row=r, column=2).alignment = Alignment(horizontal="center")
             ws2.cell(row=r, column=3).alignment = Alignment(horizontal="center")
+
+    # History adjustment summary (Layer 2)
+    _write_history_adjustment_summary(ws2, df, total)
 
     _write_ai_source_breakdown(ws2, df, total)
     _write_summary_engine_section(ws2, mode)

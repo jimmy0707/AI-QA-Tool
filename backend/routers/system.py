@@ -22,6 +22,13 @@ from google import genai
 from config import OLLAMA_URL, OLLAMA_MODEL_DEFAULT, OLLAMA_MODELS, OUTPUT_DIR, logger
 from utils.hardware import get_hardware_info, suggest_model, get_installed_models
 from ai_rate_manager import ai_manager
+from database import SessionLocal
+from crud import (
+    get_all_projects, get_project_by_id,
+    get_releases_for_project, get_release_by_id,
+    get_test_cases_for_project, get_executions_for_release,
+    get_execution_history,
+)
 
 router = APIRouter()
 
@@ -164,3 +171,110 @@ async def pull_model(data: dict):
         return {"success": True, "message": f"{model} downloaded successfully!"}
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to pull model: {str(e)}")
+
+
+# ── History / Analytics Routes ────────────────────────────────────────────────
+
+@router.get("/api/projects")
+def list_projects():
+    """List all projects stored in the database."""
+    db = SessionLocal()
+    try:
+        projects = get_all_projects(db)
+        return [
+            {"id": p.id, "name": p.name, "created_at": p.created_at.isoformat()}
+            for p in projects
+        ]
+    finally:
+        db.close()
+
+
+@router.get("/api/projects/{project_id}/releases")
+def list_releases(project_id: int):
+    """List all releases for a project."""
+    db = SessionLocal()
+    try:
+        project = get_project_by_id(db, project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found.")
+        releases = get_releases_for_project(db, project_id)
+        return [
+            {
+                "id":           r.id,
+                "release_name": r.release_name,
+                "release_date": r.release_date.isoformat(),
+                "total_cases":  len(r.executions),
+            }
+            for r in releases
+        ]
+    finally:
+        db.close()
+
+
+@router.get("/api/releases/{release_id}/results")
+def get_release_results(release_id: int):
+    """Get all test execution results for a specific release."""
+    db = SessionLocal()
+    try:
+        release = get_release_by_id(db, release_id)
+        if not release:
+            raise HTTPException(status_code=404, detail="Release not found.")
+        executions = get_executions_for_release(db, release_id)
+        return {
+            "release_name": release.release_name,
+            "release_date": release.release_date.isoformat(),
+            "total":        len(executions),
+            "p1_count":     sum(1 for e in executions if e.priority == "P1"),
+            "p2_count":     sum(1 for e in executions if e.priority == "P2"),
+            "p3_count":     sum(1 for e in executions if e.priority == "P3"),
+            "results": [
+                {
+                    "id":             e.id,
+                    "test_case_id":   e.test_case_id,
+                    "title":          e.test_case.title,
+                    "module":         e.test_case.module,
+                    "risk_score":     e.risk_score,
+                    "priority":       e.priority,
+                    "ai_source":      e.ai_source,
+                    "recommended":    e.recommended,
+                    "ai_explanation": e.ai_explanation,
+                    "base_score":     e.base_score,
+                    "adjusted_score": e.adjusted_score,
+                    "adj_reason":     e.adj_reason,
+                    "execution_date": e.execution_date.isoformat(),
+                }
+                for e in executions
+            ],
+        }
+    finally:
+        db.close()
+
+
+@router.get("/api/testcases/{test_case_id}/history")
+def get_testcase_history(test_case_id: int):
+    """Get execution history for a single test case across all releases."""
+    db = SessionLocal()
+    try:
+        history = get_execution_history(db, test_case_id)
+        if not history:
+            raise HTTPException(status_code=404, detail="No history found for this test case.")
+        tc = history[0].test_case
+        return {
+            "test_case_id": test_case_id,
+            "title":        tc.title,
+            "module":       tc.module,
+            "history": [
+                {
+                    "release_name":   e.release.release_name,
+                    "release_date":   e.release.release_date.isoformat(),
+                    "risk_score":     e.risk_score,
+                    "priority":       e.priority,
+                    "ai_source":      e.ai_source,
+                    "recommended":    e.recommended,
+                    "execution_date": e.execution_date.isoformat(),
+                }
+                for e in history
+            ],
+        }
+    finally:
+        db.close()

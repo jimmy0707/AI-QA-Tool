@@ -552,3 +552,111 @@ body {
 
 /* Action row — run + stop side by side */
 .action-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+/* ══════════════════════════════════════════════════════
+   HISTORY & RELEASE ADJUSTMENT — new styles
+   ══════════════════════════════════════════════════════ */
+
+/* ── Advanced toggle card ── */
+.advanced-card {
+  margin-bottom: 1.5rem;
+  padding: 0;
+  overflow: hidden;
+}
+.advanced-toggle {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  padding: 1rem 1.6rem; background: transparent; border: none;
+  cursor: pointer; font-family: 'Inter', sans-serif;
+  font-size: 0.9rem; font-weight: 700; color: #111;
+  text-align: left; transition: background 0.18s;
+}
+.advanced-toggle:hover { background: var(--surface2); }
+.advanced-badge {
+  font-size: 0.7rem; font-weight: 700; background: #ede9fe;
+  color: #5b21b6; border: 1px solid #c4b5fd;
+  padding: 3px 10px; border-radius: 4px; letter-spacing: 0.3px;
+}
+.advanced-chevron { margin-left: auto; font-size: 0.65rem; color: var(--muted); }
+.advanced-body {
+  padding: 0 1.6rem 1.6rem;
+  border-top: 1.5px solid var(--border);
+  animation: fadeIn 0.2s ease;
+}
+.advanced-info {
+  font-size: 0.82rem; color: var(--muted); line-height: 1.7;
+  margin-bottom: 1.2rem; padding: 12px 14px;
+  background: #faf8ff; border-radius: 8px; border: 1px solid #ede9fe;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+}
+.hist-rule {
+  display: inline-block; padding: 3px 10px; border-radius: 5px;
+  font-size: 0.75rem; font-weight: 700; white-space: nowrap;
+}
+.hist-rule-red   { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+.hist-rule-amber { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+.hist-rule-blue  { background: #dbeafe; color: #1e40af; border: 1px solid #93c5fd; }
+
+.form-grid-4 { grid-template-columns: 1fr 1fr 1fr 1fr !important; }
+@media (max-width: 900px) { .form-grid-4 { grid-template-columns: 1fr 1fr !important; } }
+@media (max-width: 600px) { .form-grid-4 { grid-template-columns: 1fr !important; } }
+
+/* ── Result badges ── */
+.history-badge {
+  display: inline-block; padding: 3px 10px; border-radius: 4px;
+  font-size: 0.75rem; font-weight: 700;
+  background: #ede9fe; color: #5b21b6; border: 1px solid #c4b5fd;
+}
+.release-badge {
+  display: inline-block; padding: 3px 10px; border-radius: 4px;
+  font-size: 0.75rem; font-weight: 700;
+  background: #dbeafe; color: #1e40af; border: 1px solid #93c5fd;
+}
+
+/* ── History summary box ── */
+.history-summary {
+  background: #faf8ff; border: 1.5px solid #c4b5fd;
+  border-left: 4px solid #7c3aed;
+  border-radius: var(--radius-sm); padding: 1rem 1.2rem;
+  margin-bottom: 1.2rem;
+}
+.history-summary-title {
+  font-size: 0.88rem; font-weight: 700; color: #5b21b6; margin-bottom: 0.8rem;
+}
+.history-pills { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 0.8rem; }
+.history-pill {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 14px; border-radius: 8px; border: 1.5px solid;
+  font-size: 0.8rem;
+}
+.pill-red   { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+.pill-amber { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
+.pill-blue  { background: #dbeafe; border-color: #93c5fd; color: #1e40af; }
+.pill-icon  { font-size: 0.8rem; }
+.pill-label { font-weight: 600; }
+.pill-rule  { font-size: 0.72rem; font-weight: 700; opacity: 0.7; margin-left: 4px; }
+.history-note { font-size: 0.79rem; color: #6d28d9; line-height: 1.6; }
+
+/* ── Release context box ── */
+.release-summary {
+  background: #eff6ff; border: 1.5px solid #93c5fd;
+  border-left: 4px solid #3b82f6;
+  border-radius: var(--radius-sm); padding: 1rem 1.2rem;
+  margin-bottom: 1.2rem;
+}
+.release-summary-title { font-size: 0.88rem; font-weight: 700; color: #1e40af; margin-bottom: 0.8rem; }
+.release-pills { display: flex; gap: 8px; flex-wrap: wrap; }
+.rel-pill {
+  padding: 4px 12px; background: white; border: 1.5px solid #bfdbfe;
+  border-radius: 6px; font-size: 0.78rem; font-weight: 600; color: #1e40af;
+}
+.rel-pill-green { background: #d1fae5; border-color: #6ee7b7; color: #065f46; }
+.rel-pill-blue  { background: #dbeafe; border-color: #93c5fd; color: #1e40af; }
+
+/* ── DB save confirmation ── */
+.db-save-pill {
+  background: #f0fdf4; border: 1.5px solid #86efac;
+  border-radius: var(--radius-sm); padding: 10px 16px;
+  font-size: 0.82rem; color: #166534; margin-bottom: 1.2rem;
+}
+
+/* ── Mode badge gemini fix ── */
+.mode-badge-gemini { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }

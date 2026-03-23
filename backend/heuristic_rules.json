@@ -1,11 +1,12 @@
 {
   "meta": {
     "version": "1.0.0",
-    "description": "AI QA Platform \u2014 Heuristic keyword rules for risk scoring and automation suitability",
+    "description": "AI QA Platform — Heuristic keyword rules for risk scoring and automation suitability",
     "risk_rules_count": 1052,
     "automation_rules_count": 1000,
     "total_keywords": 2052
   },
+  "frozen_modules": [],
   "risk_rules": [
     {
       "keywords": [
@@ -1958,7 +1959,7 @@
       ],
       "suitability": "Automatable",
       "confidence": 95,
-      "reason": "API testing is the most automatable type \u2014 deterministic, fast, and reliable"
+      "reason": "API testing is the most automatable type — deterministic, fast, and reliable"
     },
     {
       "keywords": [
